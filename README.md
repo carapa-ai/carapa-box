@@ -264,7 +264,7 @@ bun src/index.ts --http --port=3100
 | `POST` | `/api/admin/tools/:name` | AdminToken | Run `sandbox_start` or `sandbox_stop` for the dashboard (other tool names return 404) |
 | `GET` | `/api/tools` | ApiToken | List all registered MCP tools |
 | `POST` | `/api/tools/:name` | ApiToken | Invoke a tool via REST |
-| `POST` | `/api/browser/attach` | ApiToken (required) | Attach Board to a managed browser (NDJSON stream) — see [browser transport](docs/BROWSER-VIEWER.md) |
+| `POST` | `/api/browser/attach` | ApiToken (required) | Attach Board to a managed browser (NDJSON stream) — see [browser transport](docs/browser-viewer.md) |
 | `POST` / `DELETE` | `/api/browser/:viewerId/input`, `/api/browser/:viewerId` | ApiToken (required) | Send viewer input / detach |
 | `POST` / `DELETE` | `/api/tmux/attach`, `/exec`, `/resize`, `/detach` | ApiToken (required) | tmux REST + SSE adapter; only with `ENABLE_SANDBOX_TMUX` |
 | `GET` | `/admin/*` | None | Admin Dashboard UI |
@@ -939,7 +939,7 @@ The controller uses matching, digest-pinned DHI Bun development and runtime
 images on Alpine 3.23. Bun is provided at `/usr/local/bin/bun`; no installer or
 copied Bun binary is needed. Keep the two base-image versions aligned and retain
 the runtime package installation of `libstdc++` and `libgcc` when customizing the
-Dockerfile. See [the image audit](docs/DHI-SECURITY-SCAN.md) for pins and validation, and [hardened Dockerfile skill](docs/hardened-dockerfile.md) for hardening other services' images.
+Dockerfile. See [the image audit](docs/dhi-security-scan.md) for pins and validation, and [hardened Dockerfile skill](docs/hardened-dockerfile.md) for hardening other services' images.
 
 ### Network Creation Fails on Startup
 

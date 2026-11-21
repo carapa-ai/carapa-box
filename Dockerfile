@@ -98,7 +98,7 @@ RUN --mount=from=bun-dev,source=/,target=/builder,ro \
     --keys-dir /builder/etc/apk/keys --repositories-file /builder/etc/apk/repositories \
     add --no-cache busybox bash ca-certificates libstdc++ libgcc"]
 
-# Docker CLI + plugins; see docs/DHI-SECURITY-SCAN.md for scan coverage.
+# Docker CLI + plugins; see docs/dhi-security-scan.md for scan coverage.
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=buildx /usr/libexec/docker/cli-plugins/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx
 COPY --from=compose    /docker-compose      /usr/local/lib/docker/cli-plugins/docker-compose
