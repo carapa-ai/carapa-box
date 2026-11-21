@@ -2,7 +2,8 @@
 
 CarapaBox includes an AI skill that generates security-hardened Dockerfiles for
 any new service or when hardening existing container images. The skill is
-located at `.claude/skills/hardened-dockerfile/SKILL.md` and is automatically
+located at `.agent/skills/hardened-dockerfile/SKILL.md` (linked from
+`.claude/skills/` and `.agents/skills/`) and is automatically
 triggered when an agent is asked to create or improve a Dockerfile.
 
 ## What it does
@@ -203,14 +204,14 @@ claude -p "Create a Dockerfile for a static nginx site that serves a React build
 
 ### Automated evaluation
 
-Evals are defined in `.claude/skills/hardened-dockerfile/evals.json` (3 test
+Evals are defined in `.agent/skills/hardened-dockerfile/evals.json` (3 test
 cases, 44 assertions total). The skill-creator skill used below comes from
 [`carapa-agent-kit`](https://github.com/carapa-ai/carapa-agent-kit) and is not
 part of this repository. Run the full eval pipeline:
 
 ```bash
 claude -p "Use the skill-creator to run evals for the hardened-dockerfile skill. \
-  Evals are in .claude/skills/hardened-dockerfile/evals.json. \
+  Evals are in .agent/skills/hardened-dockerfile/evals.json. \
   Save results to .claude/skills/hardened-dockerfile-workspace/iteration-2/. \
   Generate a static eval viewer HTML when done."
 ```
@@ -221,7 +222,7 @@ by iteration, with grading, timing, and benchmark data.
 ## File locations
 
 ```
-.claude/skills/hardened-dockerfile/
+.agent/skills/hardened-dockerfile/
 ├── SKILL.md             # Skill instructions (read by agents)
 └── evals.json           # Test cases and assertions
 

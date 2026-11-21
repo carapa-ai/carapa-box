@@ -52,6 +52,7 @@ config/issue-credentials.yaml
 # Local agent skills (not part of public package)
 .claude/skills/*
 !.claude/skills/setup
+!.claude/skills/hardened-dockerfile
 
 # Debug-only llama-proxy capture dump (KV-cache prefix-drift analysis)
 egress-proxy/captures/*
