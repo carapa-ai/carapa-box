@@ -1,0 +1,136 @@
+#include <tunables/global>
+
+# AppArmor profile for CarapaBox proxy containers
+# Applies to: squid, api-relay, llama-proxy
+#
+# Purpose: Allow network proxying, credential injection, and logging.
+#          Squid needs config write access for sed -i templating.
+#          api-relay needs credential file access for token injection.
+
+profile carapabox-proxy flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  # ── Network ──────────────────────────────────────────────────────
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network unix stream,
+  network unix dgram,
+  network netlink raw,
+
+  # ── Capabilities ────────────────────────────────────────────────
+  capability chown,
+  capability setuid,
+  capability setgid,
+  capability fowner,
+  capability dac_override,
+  capability net_bind_service,
+
+  # ── Deny sensitive paths ────────────────────────────────────────
+  deny /etc/shadow rwklx,
+  deny /etc/gshadow rwklx,
+  deny /etc/sudoers rwklx,
+  deny /etc/sudoers.d/** rwklx,
+  deny /proc/*/environ r,
+  deny /proc/sysrq-trigger rwklx,
+  deny /proc/sys/** w,
+  deny /proc/kcore rwklx,
+  deny /proc/kmsg rwklx,
+  deny /sys/** w,
+  /sys/fs/cgroup/memory.max r,   # Bun/Node reads cgroup memory limits
+  /sys/fs/cgroup/memory.high r,  # Bun/Node reads cgroup memory limits
+  deny /root/** rwklx,
+  deny /home/** rwklx,
+  deny /dev/sd* rwklx,
+  deny /dev/nvme* rwklx,
+  deny /dev/xvd* rwklx,
+  deny /dev/vd* rwklx,
+  deny mount,
+
+  # ── Squid ──────────────────────────────────────────────────────
+  /etc/squid/** rw,            # config write needed for sed -i templating
+  /var/log/squid/** rw,
+  /var/spool/squid/** rw,      # HTTP cache
+  /var/run/squid/** rw,        # PID file
+
+  # ── api-relay (Node.js) ───────────────────────────────────────
+  /app/ r,
+  /app/** rwmk,                # relay code + credential files (bun needs mmap 'm')
+  /app/credentials/** rwk,     # OAuth tokens (auto-refresh writes)
+  /app/relay-clients/** r,     # client config files
+  /home/** rwmk,               # fallback in case AppArmor evaluates the host path
+
+  # ── Whisper model storage ─────────────────────────────────────
+  /models/ r,
+  /models/** rw,
+
+  # ── Temp & runtime ────────────────────────────────────────────
+  /tmp/** rw,
+  /run/** rwk,
+  /var/tmp/** rw,
+
+  # ── System binaries & libraries ────────────────────────────────
+  /usr/** rix,
+  /lib/** rix,
+  /lib64/** rix,
+  /bin/** rix,
+  /sbin/** rix,
+
+  # ── System config (read-only) ──────────────────────────────────
+  /etc/passwd r,
+  /etc/group r,
+  /etc/hosts r,
+  /etc/resolv.conf r,
+  /etc/host.conf r,
+  /etc/nsswitch.conf r,
+  /etc/ssl/** r,
+  /etc/ca-certificates/** r,
+  /etc/ld.so.cache r,
+  /etc/ld.so.conf r,
+  /etc/ld.so.conf.d/** r,
+  /etc/localtime r,
+  /etc/timezone r,
+
+  # ── Logging ────────────────────────────────────────────────────
+  /var/log/** rw,
+
+  # ── Device access ──────────────────────────────────────────────
+  /dev/null rw,
+  /dev/zero r,
+  /dev/full rw,
+  /dev/random r,
+  /dev/urandom r,
+  /dev/tty rw,
+  /dev/pts/* rw,
+  /dev/ptmx rw,
+  /dev/shm/** rw,
+  /dev/fd/** rw,
+
+  # ── Proc (filtered) ───────────────────────────────────────────
+  /proc/ r,
+  /proc/self/** r,
+  /proc/[0-9]*/stat r,
+  /proc/[0-9]*/status r,
+  /proc/[0-9]*/fd/** rw,
+  /proc/[0-9]*/fdinfo/** r,
+  /proc/[0-9]*/net/** r,
+  /proc/[0-9]*/cgroup r,
+  /proc/meminfo r,
+  /proc/cpuinfo r,
+  /proc/filesystems r,
+  /proc/stat r,
+  /proc/loadavg r,
+  /proc/uptime r,
+  /proc/version r,
+  /proc/version_signature r,   # kernel version signature (Python/Bun startup)
+  /proc/sys/kernel/hostname r,
+  /proc/sys/kernel/osrelease r,
+  /proc/sys/kernel/ngroups_max r,
+  /proc/sys/net/** r,
+
+  # ── Signal handling ────────────────────────────────────────────
+  signal,
+  ptrace read peer=carapabox-proxy,
+}

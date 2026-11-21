@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "typescript-native": {
+      "command": "tsc",
+      "args": ["--lsp", "--stdio"],
+      "fileTypes": [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"],
+      "rootMarkers": ["tsconfig.json", "package.json"]
+    },
+    "clangd": {
+      "fileTypes": [".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".m", ".mm", ".cu", ".cuh"]
+    }
+  }
+}

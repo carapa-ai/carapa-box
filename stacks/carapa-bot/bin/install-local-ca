@@ -1,0 +1,52 @@
+#!/bin/sh
+# Chromium uses the user's NSS database for locally administered trust roots.
+# /home/ubuntu is mounted at runtime, so this cannot be prepared at image build.
+set -eu
+
+ca_file=${CARAPA_CA_FILE:-/usr/local/share/ca-certificates/carapa-local-root.crt}
+nss_dir="${HOME:-/home/ubuntu}/.pki/nssdb"
+cert_name=carapa-local-root
+
+if [ ! -r "$ca_file" ] || ! command -v certutil >/dev/null 2>&1; then
+    exit 0
+fi
+
+pem_body() { sed -n '/BEGIN CERTIFICATE/,/END CERTIFICATE/p' | tr -d ' \r\n'; }
+
+# Every CarapaBot sandbox shares this DB, and gVisor keeps file locks
+# sandbox-local, so SQLite cannot serialize writers across sandboxes. Leave it
+# untouched when the image CA is already trusted; that is every normal start.
+wanted=$(pem_body <"$ca_file")
+installed=$(certutil -L -d "sql:$nss_dir" -n "$cert_name" -a 2>/dev/null | pem_body) || installed=
+if [ -n "$installed" ] && [ "$installed" = "$wanted" ] &&
+    certutil -L -d "sql:$nss_dir" 2>/dev/null | grep -q "^$cert_name[[:space:]]*C,,"; then
+    exit 0
+fi
+
+# mkdir is atomic on the host filesystem, unlike flock across gVisor sandboxes.
+mkdir -p "$(dirname "$nss_dir")"
+lock="$nss_dir.lock"
+waited=0
+until mkdir "$lock" 2>/dev/null; do
+    # A sandbox killed mid-update leaves the lock behind; the update takes seconds.
+    if [ -n "$(find "$lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then
+        rmdir "$lock" 2>/dev/null || true
+        continue
+    fi
+    waited=$((waited + 1))
+    if [ "$waited" -ge 60 ]; then
+        echo "install-local-ca: timed out waiting for $lock" >&2
+        exit 1
+    fi
+    sleep 1
+done
+trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+
+mkdir -p "$nss_dir"
+if [ ! -f "$nss_dir/cert9.db" ]; then
+    certutil -N --empty-password -d "sql:$nss_dir"
+fi
+
+# Replace it so a rotated deployment CA is picked up.
+certutil -D -d "sql:$nss_dir" -n "$cert_name" >/dev/null 2>&1 || true
+certutil -A -d "sql:$nss_dir" -n "$cert_name" -t "C,," -i "$ca_file"

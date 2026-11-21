@@ -1,0 +1,35 @@
+{
+    "research": {
+        "model": "gemma4:e2b",
+        "allow": [
+            "Read",
+            "Grep",
+            "Glob",
+            "WebFetch",
+            "WebSearch",
+            "AskUserQuestion",
+            "TodoWrite"
+        ]
+    },
+    "qwen3.6": { // opencode
+        "allow": [
+            //"question", // requires CLI, does not work
+            "bash",
+            "read",
+            "glob",
+            "grep",
+            "edit",
+            "write",
+            "task",
+            //"webfetch",
+            "todowrite",
+            "skill",           
+            "mcp__carapa-board__gitnexus*",
+            "mcp__carapa-board__search_knowledge",
+            "mcp__carapa-board__recall",
+            "carapa-board_gitnexus*",
+            "carapa-board_search_knowledge",
+            "carapa-board_recall"
+        ]
+    }
+}

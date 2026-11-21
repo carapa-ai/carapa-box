@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carapa.ai/schema/carapa-run-manifest-v1.schema.json",
+  "title": "CarapaRunManifestV1",
+  "description": "The immutable output.v1.meta.json declaration paired with a CarapaBot output.v1.jsonl stream.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "version", "harness", "requestedModel"],
+  "properties": {
+    "format": {
+      "const": "carapa-run"
+    },
+    "version": {
+      "const": 1
+    },
+    "harness": {
+      "type": "string",
+      "minLength": 1
+    },
+    "requestedModel": {
+      "description": "The model selection submitted by the composer or caller before provider-side routing.",
+      "type": ["string", "null"],
+      "minLength": 1
+    }
+  }
+}

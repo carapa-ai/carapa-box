@@ -1,0 +1,18 @@
+# Optional deployment-specific trust. No private CA is embedded in the image.
+services:
+  agent:
+    environment:
+      CARAPA_CA_FILE: /usr/local/share/ca-certificates/carapa-local-root.crt
+      # Compose also supplies these to docker exec / CarapaBox commands, which
+      # do not inherit exports made by the container entrypoint.
+      NODE_EXTRA_CA_CERTS: /usr/local/share/ca-certificates/carapa-local-root.crt
+      SSL_CERT_FILE: /tmp/carapa-certs/ca-bundle.crt
+      REQUESTS_CA_BUNDLE: /tmp/carapa-certs/ca-bundle.crt
+      CURL_CA_BUNDLE: /tmp/carapa-certs/ca-bundle.crt
+    volumes:
+      - type: bind
+        source: ${CARAPA_CA_CERTIFICATE:?Set the absolute host path of the deployment CA}
+        target: /usr/local/share/ca-certificates/carapa-local-root.crt
+        read_only: true
+        bind:
+          create_host_path: false

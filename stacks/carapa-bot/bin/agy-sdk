@@ -1,0 +1,29 @@
+#!/bin/sh
+# Terminal `agy-sdk`: runs the Antigravity SDK shim (agy-sdk.py) in the installed SDK's Python.
+# Usage: agy-sdk [--model NAME] [--system TEXT] [--work-dir DIR] "prompt"   (see agy-sdk --help; more in agy.md)
+# Prints one JSON event per line; the last one is the result with token usage.
+# Calls go through the relay's Antigravity route (your Google AI Pro subscription), where
+# models carry their effort: gemini-4-argon-medium, gemini-3.8-flash-high. AGY_ROUTE=google
+# uses the relay's free-tier Gemini API key instead (plain names such as gemini-3.8-flash).
+set -eu
+self=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+python=${CARAPA_AGY_PYTHON:-}
+if [ -z "$python" ]; then
+  store=${CARAPA_HARNESS_STORE:-/opt/carapa-harness-store}
+  snapshot=${CARAPA_HARNESS_SNAPSHOT:-$(tr -d '[:space:]' < "$store/current" 2>/dev/null || true)}
+  python=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["entries"]["antigravity"]["env"]["CARAPA_AGY_PYTHON"])' \
+    "$store/snapshots/$snapshot.json" 2>/dev/null || true)
+fi
+[ -n "$python" ] && [ -x "$python" ] || { echo "agy-sdk: the antigravity harness is not installed in this sandbox" >&2; exit 127; }
+case "${AGY_ROUTE:-antigravity}" in
+  antigravity) base=${GOOGLE_GEMINI_BASE_URL:-}; export GOOGLE_GEMINI_BASE_URL="${base%/google}"
+    case "$GOOGLE_GEMINI_BASE_URL" in */antigravity) ;; *) GOOGLE_GEMINI_BASE_URL="${GOOGLE_GEMINI_BASE_URL}/antigravity" ;; esac ;;
+  google) ;;
+  *) echo "agy-sdk: AGY_ROUTE must be antigravity or google" >&2; exit 2 ;;
+esac
+# One-shot unless the caller picks a mode (--warm) or asks for help.
+mode=--once
+for arg in "$@"; do
+  case "$arg" in --warm|--once|-h|--help) mode= ;; esac
+done
+exec "$python" "$self/agy-sdk.py" $mode "$@"

@@ -1,0 +1,31 @@
+#!/usr/bin/env node
+'use strict';
+// Board owns explicit persistent close and run cleanup after recording.
+// The context ID determines every path.
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const { readBrowser, realCli, withBrowserLock } = require('./browser-session.cjs');
+const { stopApp } = require('./browser-app.cjs');
+const { stopAudio } = require('./browser-audio.cjs');
+try {
+  if (process.argv.length !== 3) throw new Error('Usage: browser-close <contextId>');
+  const { env, cwd } = readBrowser(process.argv[2], { forCleanup: true });
+  const root = env.PLAYWRIGHT_DAEMON_SESSION_DIR;
+  withBrowserLock({ PLAYWRIGHT_DAEMON_SESSION_DIR: root + '-app' }, () => stopApp(env));
+  withBrowserLock(env, () => {
+    if (fs.existsSync(root)) {
+      delete env.CARAPA_RECORD;
+      const result = spawnSync(process.execPath, [realCli(), 'close-all'], {
+        env, cwd, stdio: 'ignore', timeout: 15_000,
+      });
+      if (result.status !== 0) throw new Error('Browser cleanup failed');
+      stopAudio(env);
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(env.PWTEST_SOCKETS_DIR, { recursive: true, force: true });
+    }
+    else stopAudio(env);
+  });
+} catch (error) {
+  process.stderr.write(`browser-close: ${error.message}\n`);
+  process.exitCode = 1;
+}

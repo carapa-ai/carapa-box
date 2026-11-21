@@ -1,0 +1,18 @@
+#!/bin/sh
+# Terminal `vibe` through the relay with the harness's login and privacy settings.
+# Board runs set VIBE_HOME themselves and get the real CLI unchanged.
+set -eu
+self=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+real=
+IFS=:
+for dir in $PATH; do
+  [ "$dir" = "$self" ] && continue
+  # The image and the live bin mount both put a copy of this wrapper on PATH;
+  # skip any copy (matched by the opening comment) or they exec each other.
+  head -c 256 "$dir/vibe" 2>/dev/null | grep -q 'through the relay with the harness' && continue
+  if [ -x "$dir/vibe" ]; then real=$dir/vibe; break; fi
+done
+unset IFS
+[ -n "$real" ] || { echo "vibe: not installed in this sandbox" >&2; exit 127; }
+[ -z "${VIBE_HOME:-}" ] || exec "$real" "$@"
+exec bun --no-env-file "$self/runtime/terminal-cli.ts" vibe "$real" "$@"

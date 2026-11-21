@@ -1,0 +1,75 @@
+# Dependencies
+node_modules/
+/node_modules
+/node_modules/
+
+# Build output
+dist/
+
+# Environment variables
+.env
+**/.env
+**/.env.*
+!**/.env.example
+
+# Stack runtime data (may contain keys, certs, live configs)
+stacks/**/store/
+stacks/**/data/
+stacks/**/logs/
+stacks/**/.harness/
+__pycache__/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Override files
+*.override.*.yml
+
+whisper/models
+
+# Build-time caches (host-side artifacts copied into images)
+.cache/
+
+.worktrees
+*.wasm
+
+.playwright-cli/
+generated/
+secrets/
+state/
+config/issue-credentials.yaml
+.gitnexus
+
+# Local agent skills (not part of public package)
+.claude/skills/*
+!.claude/skills/setup
+
+# Debug-only llama-proxy capture dump (KV-cache prefix-drift analysis)
+egress-proxy/captures/*
+!egress-proxy/captures/.gitkeep
+egress-proxy/tool_profiles.jsonc
+
+# Generated coding-agent rules overrides (regenerated on launch; never commit)
+AGENTS.override.md
+
+# Generated PI-agent system prompt (mirror of AGENTS.override.md)
+.pi/
+.pi
+
+# Repository setup skill is public; other installed agent skills remain local.
+.agent/skills/*
+!.agent/skills/setup/
+# .agents/skills is the repository's tracked discovery alias.
+
+# Host-dev audit log (must never dirty the checkout)
+audit.jsonl
+audit.jsonl.1

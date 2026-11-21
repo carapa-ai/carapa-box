@@ -1,0 +1,284 @@
+#!/usr/bin/env node
+/**
+ * playwright-cli recording shim.
+ *
+ * Mounted at /usr/local/ai-cli-bin/playwright-cli in every sandbox. This is the
+ * sole public entrypoint; the image-installed package is only its backend.
+ * In a recording stage the first successful browser workflow lazily starts
+ * video capture. Later `open` calls become `goto` so the agent stays on the
+ * recorded page, and `close`/`video-stop` are deferred to CarapaBoard's
+ * deterministic finally cleanup.
+ *
+ * Conversation browsers persist between turns. Explicit sessions are pinned;
+ * repeated open reuses the current browser, and Board owns close/restart.
+ */
+'use strict';
+
+const path = require('path');
+const fs = require('fs');
+const { spawnSync } = require('child_process');
+const { currentEnvironment, browserKey, browserIsOpen, withBrowserLock } = require('./browser-session.cjs');
+const { prepareAudio, markAudioBrowser, stopAudio } = require('./browser-audio.cjs');
+try {
+  const current = currentEnvironment();
+  for (const key of Object.keys(process.env)) {
+    if (browserKey(key) && !(key in current)) delete process.env[key];
+  }
+  Object.assign(process.env, current);
+  if (current.CARAPA_BROWSER_SESSION_ID && current.CARAPA_BROWSER_WORK_DIR) process.chdir(current.CARAPA_BROWSER_WORK_DIR);
+} catch (error) {
+  process.stderr.write(`playwright-cli: ${error.message}\n`);
+  process.exit(1);
+}
+
+function resolveRealCli() {
+  const candidates = [
+    process.env.CARAPA_PLAYWRIGHT_REAL,
+    // Public images install each harness in its own immutable directory.
+    '/opt/carapa-harness/harnesses/playwright/lib/node_modules/@playwright/cli/playwright-cli.js',
+    // Existing images moved the backend aside when they baked the old shim.
+    '/opt/carapa-harness/lib/node_modules/@playwright/cli/playwright-cli.real.js',
+    // New images leave the package entry untouched.
+    '/opt/carapa-harness/lib/node_modules/@playwright/cli/playwright-cli.js',
+    '/usr/local/lib/node_modules/@playwright/cli/playwright-cli.real.js',
+    '/usr/local/lib/node_modules/@playwright/cli/playwright-cli.js',
+  ].filter(Boolean);
+  const real = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!real) {
+    process.stderr.write(
+      `playwright-cli: real CLI not found; checked ${candidates.join(', ')}\n`,
+    );
+    process.exit(127);
+  }
+  return real;
+}
+
+const REAL = resolveRealCli();
+// Per-task marker: lives in this run's playwright daemon dir (carapa-board pins
+// PLAYWRIGHT_DAEMON_SESSION_DIR per task) so parallel recording runs sharing the
+// container don't share one marker. Falls back to /tmp for standalone use.
+const RECORDING_DAEMON =
+  process.env.CARAPA_RECORD_DAEMON_DIR ||
+  process.env.PLAYWRIGHT_DAEMON_SESSION_DIR ||
+  '';
+const RECORDING_SOCKETS =
+  process.env.CARAPA_RECORD_SOCKETS_DIR ||
+  (RECORDING_DAEMON ? path.join(RECORDING_DAEMON, 'sockets') : '');
+const RECORDING_DIR = process.env.CARAPA_RECORD_DIR || '';
+const MARKER = path.join(RECORDING_DAEMON || '/tmp', '.pwcli-recording');
+const START_LOCK = path.join(
+  RECORDING_DAEMON || '/tmp',
+  '.pwcli-recording-start',
+);
+
+// Flags that `open` accepts but `goto` rejects — must be stripped on rewrite.
+const GOTO_REJECTS = /^--(config|browser|headed|persistent|profile)(=.*)?$/;
+const SESSION_WITH_VALUE = /^(?:-s|--session)=.+$/;
+const SESSION_FLAG = /^(?:-s|--session)$/;
+
+function pinManagedSession(argv) {
+  // A managed context owns exactly one browser session. Drop all supported
+  // explicit session spellings from every command so the real CLI consistently
+  // uses the board-provided PLAYWRIGHT_CLI_SESSION.
+  const out = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (SESSION_WITH_VALUE.test(argv[i])) continue;
+    if (SESSION_FLAG.test(argv[i])) {
+      i++;
+      continue;
+    }
+    out.push(argv[i]);
+  }
+  return out;
+}
+
+function rewriteOpenToGoto(argv) {
+  // Locate the command directly after session pinning.
+  const cmdIdx = argv.indexOf('open');
+  if (cmdIdx === -1) return null;
+  const out = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (i === cmdIdx) { out.push('goto'); continue; }
+    if (GOTO_REJECTS.test(argv[i])) continue; // drop open-only flags
+    out.push(argv[i]);
+  }
+  return out;
+}
+
+function run(argv) {
+  let env = { ...process.env };
+  // Apply capture sizing in the daemon as well as the viewer process, so a
+  // recording started first cannot limit a later viewer's resolution.
+  env.NODE_OPTIONS = [env.NODE_OPTIONS, `--require=${path.join(__dirname, 'browser-screencast.cjs')}`].filter(Boolean).join(' ');
+  if (enabled || process.env.CARAPA_BROWSER_SESSION_ID) delete env.CARAPA_AGENT_RUN_ID;
+  if (enabled) {
+    // The Codex app-server tags tool processes so it can reap escaped
+    // descendants at turn end. A Playwright recording daemon must outlive that
+    // teardown long enough for CarapaBoard's record-end.sh to stop and persist
+    // the video, so do not propagate the generic agent-process tag into the
+    // Board-owned browser lifecycle.
+    delete env.CARAPA_AGENT_RUN_ID;
+    const daemonSession = path.basename(
+      RECORDING_DAEMON,
+    ).replace(/^pwcli-/, '');
+    env.PLAYWRIGHT_DAEMON_SESSION_DIR = RECORDING_DAEMON;
+    env.PLAYWRIGHT_DAEMON_SOCKETS_DIR = RECORDING_SOCKETS;
+    env.PLAYWRIGHT_CLI_SESSION =
+      process.env.CARAPA_RECORD_SESSION || daemonSession;
+  }
+  let audio = false;
+  if (argv.find(arg => !arg.startsWith('-')) === 'open' && (env.CARAPA_BROWSER_SESSION_ID || env.CARAPA_BROWSER_RUN_ID)) {
+    const prepared = prepareAudio(env);
+    if (prepared) {
+      env = prepared;
+      env.NODE_OPTIONS = [env.NODE_OPTIONS, `--require=${path.join(__dirname, 'browser-audio-launch.cjs')}`].filter(Boolean).join(' ');
+      audio = true;
+    }
+  }
+  const r = spawnSync(process.execPath, [REAL, ...argv], {
+    stdio: 'inherit',
+    env,
+  });
+  if (audio && r.status === 0) markAudioBrowser(env);
+  else if (audio) stopAudio(env);
+  return r.status === null ? 1 : r.status;
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function acquireStartLock() {
+  for (let i = 0; i < 200; i++) {
+    if (fs.existsSync(MARKER)) return null;
+    try {
+      return fs.openSync(START_LOCK, 'wx');
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      sleep(50);
+    }
+  }
+  return null;
+}
+
+function startRecording(quiet = false) {
+  if (fs.existsSync(MARKER)) return true;
+  if (!RECORDING_DAEMON || !RECORDING_DIR) return false;
+
+  fs.mkdirSync(RECORDING_DAEMON, { recursive: true });
+  fs.mkdirSync(RECORDING_SOCKETS, { recursive: true });
+  fs.mkdirSync(RECORDING_DIR, { recursive: true });
+
+  let lockFd;
+  try {
+    lockFd = acquireStartLock();
+    if (fs.existsSync(MARKER)) return true;
+    if (lockFd === null) return false;
+
+    const output = path.join(RECORDING_DIR, 'session.webm');
+    const env = {
+      ...process.env,
+      PLAYWRIGHT_DAEMON_SESSION_DIR: RECORDING_DAEMON,
+      PLAYWRIGHT_DAEMON_SOCKETS_DIR: RECORDING_SOCKETS,
+      PLAYWRIGHT_CLI_SESSION:
+        process.env.CARAPA_RECORD_SESSION ||
+        path.basename(RECORDING_DAEMON).replace(/^pwcli-/, ''),
+    };
+    delete env.CARAPA_AGENT_RUN_ID;
+    const r = spawnSync(process.execPath, [REAL, 'video-start', output], {
+      stdio: quiet ? 'ignore' : 'inherit',
+      env,
+    });
+    if (r.status !== 0) return false;
+    fs.writeFileSync(MARKER, '');
+    return true;
+  } finally {
+    if (typeof lockFd === 'number') {
+      fs.closeSync(lockFd);
+      try {
+        fs.unlinkSync(START_LOCK);
+      } catch {
+        // The lock is already gone.
+      }
+    }
+  }
+}
+
+let argv = process.argv.slice(2);
+
+const enabled =
+  process.env.CARAPA_RECORD === '1' &&
+  process.env.CARAPA_RECORD_BOOTSTRAP !== '1';
+
+if (process.env.CARAPA_BROWSER_SESSION_ID) {
+  argv = pinManagedSession(argv);
+  const commandIndex = argv.findIndex(arg => !arg.startsWith('-'));
+  const command = argv[commandIndex];
+  const help = argv.includes('--help') || argv.includes('-h');
+  if (!help && ['close', 'close-all', 'kill-all', 'delete-data', 'detach'].includes(command)) {
+    console.log(argv.includes('--json') ? JSON.stringify({ status: 'shared', message: 'Use Close browser or Restart browser in Board' }) : 'Shared browser kept open. Use Close browser or Restart browser in Board to release it.');
+    process.exit(0);
+  }
+  if (!help && command === 'open') {
+    try {
+      const code = withBrowserLock(process.env, () => {
+        if (!browserIsOpen(process.env)) return run(argv);
+        const target = argv.slice(commandIndex + 1).find(arg => /^(https?:|about:)/.test(arg));
+        return run([...(target ? ['goto', target] : ['snapshot']), ...(argv.includes('--json') ? ['--json'] : [])]);
+      });
+      process.exit(code);
+    } catch (error) { console.error(`playwright-cli: ${error.message}`); process.exit(1); }
+  }
+}
+// Upstream kill-all scans every process in the container, ignoring registries.
+if (process.env.CARAPA_BROWSER_RUN_ID && pinManagedSession(argv).find(arg => !arg.startsWith('-')) === 'kill-all') argv[argv.indexOf('kill-all')] = 'close-all';
+
+if (enabled) {
+  argv = pinManagedSession(argv);
+  const recording = fs.existsSync(MARKER);
+
+  // CarapaBoard owns finalization once capture has started.
+  if (recording && ['close', 'close-all', 'kill-all', 'delete-data', 'detach', 'video-stop'].some(command => argv.includes(command))) {
+    process.exit(0);
+  }
+
+  if (recording) {
+    const rewritten = rewriteOpenToGoto(argv);
+    if (!rewritten) process.exit(run(argv));
+    // Fallback hardening: if a future CLI adds an open-only flag we did not
+    // strip, goto exits with an unknown-option error — retry with ALL --* flags
+    // removed before giving up.
+    const code = run(rewritten);
+    if (code !== 0) {
+      const stripped = rewritten.filter((a) => !a.startsWith('--'));
+      if (stripped.length !== rewritten.length) {
+        process.exit(run(stripped));
+      }
+    }
+    process.exit(code);
+  }
+
+  // Normalize an agent-requested video-start to the Board-owned output path.
+  if (argv.includes('video-start')) {
+    process.exit(startRecording() ? 0 : 1);
+  }
+  if (argv.includes('video-stop')) process.exit(0);
+
+  const opening = argv.includes('open');
+  if (!opening) {
+    // If a browser was opened outside this wrapper, arm capture before the
+    // first navigation/interaction so that command is included in the video.
+    startRecording(true);
+    if (fs.existsSync(MARKER) && argv.includes('close')) process.exit(0);
+  }
+
+  const code = run(argv);
+  if (code === 0 && !fs.existsSync(MARKER)) {
+    // `open` creates the browser, while an uncommon command may reveal an
+    // already-running one. Either way, start capture at the first success.
+    startRecording();
+  }
+  process.exit(code);
+}
+
+process.exit(run(argv));

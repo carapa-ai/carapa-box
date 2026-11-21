@@ -1,0 +1,166 @@
+# GIT_REPO mode: prepare the named workspace with before-start.sh.
+# CarapaBox uses image-owned commands even though their source is in bin/.
+x-carapa-command-source: image
+include:
+  - ./.harness/active/volumes.yml
+
+services:
+  agent:
+    image: ${CARAPA_BOT_IMAGE:-carapa-bot:0.1.0}
+    pull_policy: never
+    networks:
+      agent_egress:
+        # CarapaBox reserves this per instance; manual launches may use DHCP.
+        ipv4_address: "${AGENT_IPV4_ADDRESS:-}"
+    user: "1000:1000"
+    working_dir: ${WORKSPACE_PATH}
+    stdin_open: true
+    tty: true
+    init: true
+    # Recover the sandbox after a cgroup OOM or other unexpected PID 1 exit.
+    # `docker compose down` disables the policy, so CarapaBox stop remains final.
+    restart: unless-stopped
+    stop_grace_period: 1s
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+          pids: 2000
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    runtime: runsc
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:../../security/seccomp-default.json
+      - apparmor=carapabox-agent
+    cap_drop:
+      - ALL
+    # The Antigravity SDK hard-dials these Google hosts on :443 ignoring https_proxy. Point them
+    # at the api-relay SNI bridge, which tunnels them through squid. extra_hosts
+    # writes ONLY this container's /etc/hosts (Docker-managed, so no writable-file
+    # or :443-bind needed here), and it's per-container so squid still resolves the
+    # real Google IPs (no loop). API_RELAY_IP = api-relay's IP on this agent's
+    # network — set it before `up`: API_RELAY_IP=$(docker inspect -f \
+    # '{{(index .NetworkSettings.Networks "agent_egress").IPAddress}}' \
+    # egress-proxy-api-relay-1). The box injects it per-instance. `:?` fails the
+    # `up` loudly if it's unset rather than silently mis-routing.
+    extra_hosts:
+      - "daily-cloudcode-pa.googleapis.com:${API_RELAY_IP:?set to api-relay IP on the agent network}"
+      - "oauth2.googleapis.com:${API_RELAY_IP:?set to api-relay IP on the agent network}"
+      - "www.googleapis.com:${API_RELAY_IP:?set to api-relay IP on the agent network}"
+    read_only: true
+    tmpfs:
+      - /var/log:size=8M,nosuid,nodev,uid=1000,gid=1000
+      - /run:size=8M,nosuid,nodev,uid=1000,gid=1000
+      # Container-local views over the shared agent home: carapa-agent-view
+      # links this project's skills and rules here at start (entrypoint) and
+      # when CarapaBoard refreshes it. Every harness path resolves to these.
+      - /home/ubuntu/.agent/skills:size=1M,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0755
+      - /home/ubuntu/.agent/rules:size=1M,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0755
+      - /etc/profile.d:size=1M,noexec,nosuid,nodev,uid=1000,gid=1000
+    env_file:
+      - path: ./.env
+    environment:
+      - ENABLE_SSHD=${ENABLE_SSHD:-0}
+      # API keys are injected by api-relay — agent never sees raw credentials.
+      # Antigravity SDK and ACP use the Google relay with a validation-only key.
+      - ANTHROPIC_API_KEY=sk-ant-dummy-routed-via-relay
+      - ANTHROPIC_BASE_URL=http://api-relay:8080/anthropic
+      - OPENAI_API_KEY=sk-proj-relay-placeholder-00000000000000000000000000000000
+      - GEMINI_API_KEY=carapa-relay-placeholder
+      - GOOGLE_GEMINI_BASE_URL=http://api-relay:8080/google
+      - HTTP_PROXY=http://squid:3128
+      - HTTPS_PROXY=http://squid:3128
+      - PLAYWRIGHT_MCP_PROXY_SERVER=http://squid:3128
+      - PLAYWRIGHT_MCP_PROXY_BYPASS=localhost,127.0.0.1,llama-proxy,api-relay
+      - NO_PROXY=localhost,127.0.0.1,llama-proxy,api-relay
+      # Node (>=24) ignores HTTP(S)_PROXY unless this is set; without it fetch() to Squid-allowed hosts fails with EAI_AGAIN.
+      # Stack-internal service names must stay in NO_PROXY above.
+      - NODE_USE_ENV_PROXY=1
+      - MEMORY_PROJECT=${MEMORY_PROJECT}
+      - TERM=xterm-256color
+      - COLORTERM=truecolor
+    volumes:
+      # Use an anonymous volume for /tmp to ensure it's writable in read-only mode
+      # and visible to both the main process and 'docker exec' (unlike tmpfs).
+      - /tmp
+
+      # Selected only after installation and offline validation by harness.py.
+      - type: volume
+        source: carapa_bot_harness
+        target: /opt/carapa-harness-store
+        read_only: true
+        volume:
+          nocopy: true
+      - type: volume
+        source: carapa_bot_harness
+        target: /opt/carapa-harness/bin
+        read_only: true
+        volume:
+          nocopy: true
+          subpath: bin
+
+      # Knowledge base — bind-mounted from host; agent can git commit, user pushes externally
+      - workspace:${WORKSPACE_PATH}
+
+      # Codex configuration and state persist in AGENT_HOME below. Do not
+      # overlay config.toml here: it is intentionally maintained per agent
+      # home alongside the Codex state and credentials.
+
+      # Per-group memory folder — persists CLAUDE.md and memory files across sessions
+      # GROUP_DIR is the project's own group folder by default. Pointing it at the parent
+      # groups/ dir is an admin option that gives write access to every group (see docs/mount-allowlist.md).
+      - type: volume
+        source: mount_group_dir
+        target: /workspace/group
+        volume:
+          nocopy: true
+          subpath: ${GROUP_DIR_SUBPATH:-.}
+
+      # IPC: per-instance run directories (args, output, exit_code)
+      - type: volume
+        source: mount_ipc
+        target: /workspace/ipc
+        volume:
+          nocopy: true
+          subpath: ${IPC_MOUNT_SUBPATH:-.}
+
+      # Agent home — settings and history (OAuth tokens, .claude, .codex, etc.)
+      - type: volume
+        source: mount_agent_home
+        target: /home/ubuntu
+        volume:
+          nocopy: true
+          subpath: ${AGENT_HOME_SUBPATH:-.}
+      # The same agent home, read-only: the source the views link to, so
+      # agents cannot change shared skills and rules from inside a sandbox.
+      - type: volume
+        source: mount_agent_home
+        target: /opt/carapa/agent-home
+        read_only: true
+        volume:
+          nocopy: true
+          subpath: ${AGENT_HOME_SUBPATH:-.}
+
+volumes:
+  workspace:
+    external: true
+    name: ${COMPOSE_PROJECT_NAME}_workspace
+  mount_group_dir:
+    external: true
+    name: ${GROUP_DIR_VOLUME:-carapa-mount-unset}
+  mount_ipc:
+    external: true
+    name: ${IPC_MOUNT_VOLUME:-carapa-mount-unset}
+  mount_agent_home:
+    external: true
+    name: ${AGENT_HOME_VOLUME:-carapa-mount-unset}
+
+networks:
+  agent_egress:
+    external: true
+    name: ${AGENT_NETWORK:-agent_egress}

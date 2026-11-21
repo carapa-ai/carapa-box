@@ -1,0 +1,54 @@
+# ── Hardened API credential relay ────────────────────────────────────────
+# Multi-stage build: installs Node.js in full Alpine, then copies the
+# runtime into DHI alpine-base for minimal attack surface.
+# Resolves Bun's incapability of injecting raw sockets into TLS requests.
+# Application files are bind-mounted at runtime via compose volumes.
+#
+# Security items addressed: #4 (DHI), #5 (digest pin), #6 (CVE scan), #7 (minimal pkgs)
+
+# ── Build stage — full Alpine with apk ──────────────────────────────────
+FROM alpine:3.23 AS build
+
+# nodejs — runtime for api-relay.mjs (including direct OAuth token refresh;
+# no provider CLI binaries or package-manager dependencies are required)
+# ca-certificates — TLS certificate validation for upstream API calls
+RUN apk add --no-cache nodejs ca-certificates
+
+# Collect Node.js and its shared library dependencies
+RUN mkdir -p /deps/usr/bin /deps/usr/lib && \
+    cp /usr/bin/node /deps/usr/bin/ && \
+    for lib in $(ldd /usr/bin/node 2>/dev/null | awk '/=>/{print $3}'); do \
+      cp "$lib" /deps/usr/lib/ 2>/dev/null || true; \
+    done
+
+# ── Runtime stage — DHI distroless Alpine ───────────────────────────────
+# dhi.io/alpine-base:3.23 — pinned 2026-09-22
+FROM dhi.io/alpine-base:3.23@sha256:b9d3f74989db66757080994a59c89268bd2e72e83b5d4784969addec65ab3530
+
+LABEL org.opencontainers.image.title="egress-proxy-api-relay" \
+      org.opencontainers.image.description="Credential injection relay for AI agent API calls" \
+      org.opencontainers.image.version="1.0.0"
+
+# Copy Node.js binary and its runtime libraries from build
+COPY --from=build /deps/usr/bin/node /usr/bin/node
+COPY --from=build /deps/usr/lib/ /usr/lib/
+
+# Copy CA certificates for TLS connections to upstream APIs
+COPY --from=build /etc/ssl/certs/ /etc/ssl/certs/
+COPY --from=build /usr/share/ca-certificates/ /usr/share/ca-certificates/
+
+WORKDIR /app
+
+# Non-root user — UID/GID set at runtime via compose `user:` directive
+# to match the host credential file owner (no world-readable files needed)
+
+# Node inline healthcheck
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD node -e "http.get('http://localhost:8080/').on('error', () => process.exit(1))"
+
+EXPOSE 8080
+
+# The api-relay/ code directory and relay-clients/ are bind-mounted from the
+# host (see compose). The main process supervises a relay worker; SIGHUP
+# reloads the code in place, SIGTERM drains.
+CMD ["node", "api-relay/api-relay.mjs"]

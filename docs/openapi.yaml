@@ -1,0 +1,2538 @@
+openapi: 3.1.0
+info:
+  title: CarapaBox API
+  version: 0.2.0
+  description: |
+    HTTP API for CarapaBox — an MCP server that manages isolated Docker-based
+    coding environments (sandboxes/stacks).
+
+    ## Authentication
+
+    Two Bearer token environments are supported, both passed via the
+    `Authorization: Bearer <token>` header:
+
+    | Token env var              | Protects                        |
+    |----------------------------|---------------------------------|
+    | `CARAPA_BOX_API_TOKEN`     | MCP, sandbox tools, `/api/browser/*`, `/api/tmux/*`, and the Board/relay service operations below |
+    | `CARAPA_BOX_ADMIN_TOKEN`   | `/api/admin/*` routes only (requires a separate credential) |
+
+    Board/relay service operations also accept the API token:
+
+    - GET/POST/PUT/DELETE `/api/admin/relay-token/:name`
+    - GET `/api/admin/relay-identity/:name`
+    - GET `/api/admin/provider-accounts`, `.../usage` and `.../models`
+    - POST `/api/admin/provider-accounts/order` and `.../login`
+    - POST `/api/admin/provider-accounts/login/:id/complete`
+    - DELETE `/api/admin/provider-accounts/login/:id`
+    - PATCH/DELETE `/api/admin/provider-accounts/:id`
+    - GET `/api/admin/mcp-connections`
+    - POST `/api/admin/mcp-connections/login`, `.../login/:id/complete` and
+      `.../revoke`
+    - DELETE `/api/admin/mcp-connections/login/:id`
+
+    These calls also accept the admin token and do not require one to be
+    configured. All other admin paths and methods (`/api/admin/info`, `/stacks`, `/logs`, `/config`,
+    `/stacks/:name/policy`, `/tools/:name`) accept only a distinct admin token:
+    they return 503 when it is missing or identical to the API token, and 401
+    when the presented token does not match.
+
+    ## Feature flags
+
+    Several tool endpoints are only registered when specific environment
+    variables are set:
+
+    | Env var                | Unlocks tools                                          |
+    |------------------------|--------------------------------------------------------|
+    | `ENABLE_SANDBOX_GIT`   | `sandbox_git`, `sandbox_worktree`, `sandbox_branch`    |
+    | `ENABLE_GIT_ISSUES`| `sandbox_issues`                                       |
+    | `ENABLE_SANDBOX_TMUX`  | `/api/tmux/*` routes (no MCP tools; 404 when unset)    |
+servers:
+  - url: http://localhost:3100
+    description: Default local server (override with MCP_SANDBOX_PORT)
+
+tags:
+  - name: health
+    description: Liveness and readiness probes
+  - name: admin
+    description: Operator administration and explicitly allowed Board/relay service operations
+  - name: tools
+    description: REST adapter for MCP tool invocations (requires API token)
+  - name: mcp
+    description: MCP Streamable HTTP transport (requires API token)
+  - name: browser
+    description: Browser viewer bridge, NDJSON stream plus input and close (requires API token)
+  - name: tmux
+    description: Tmux REST + SSE adapter, only when ENABLE_SANDBOX_TMUX is set (requires API token)
+
+# ---------------------------------------------------------------------------
+# Security schemes
+# ---------------------------------------------------------------------------
+components:
+  securitySchemes:
+    ApiToken:
+      type: http
+      scheme: bearer
+      description: Value of `CARAPA_BOX_API_TOKEN`
+    AdminToken:
+      type: http
+      scheme: bearer
+      description: Value of `CARAPA_BOX_ADMIN_TOKEN` (must differ from `CARAPA_BOX_API_TOKEN`)
+
+  # -------------------------------------------------------------------------
+  # Shared response schemas
+  # -------------------------------------------------------------------------
+  schemas:
+
+    # --- Generic ---
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: Unauthorized
+
+    # --- /health ---
+    HealthResponse:
+      type: object
+      required: [status, name, active_sessions, uptime]
+      properties:
+        status:
+          type: string
+          example: ok
+        name:
+          type: string
+          example: carapa-box
+        active_sessions:
+          type: integer
+          description: Number of active MCP sessions
+          example: 2
+        uptime:
+          type: integer
+          description: Server uptime in seconds
+          example: 3600
+
+    # --- /api/admin/info ---
+    AdminInfoResponse:
+      type: object
+      required: [uptime, port, stacks_dir, auth_enabled, active_sandboxes, instances, egress_proxy, features]
+      properties:
+        uptime:
+          type: integer
+          example: 3600
+        port:
+          type: string
+          example: "3100"
+        stacks_dir:
+          type: string
+          example: /app/stacks
+        auth_enabled:
+          type: boolean
+        active_sandboxes:
+          type: integer
+        instances:
+          type: array
+          items:
+            type: object
+            description: Raw `docker compose ls` JSON object
+        egress_proxy:
+          type: object
+          required: [running]
+          properties:
+            running:
+              type: boolean
+        features:
+          type: object
+          required: [git, issues, search]
+          properties:
+            git:
+              type: boolean
+            issues:
+              type: boolean
+            search:
+              type: boolean
+
+    # --- /api/admin/stacks ---
+    StackEntry:
+      type: object
+      required: [name, path]
+      properties:
+        name:
+          type: string
+          example: openclaw
+        path:
+          type: string
+          example: /app/stacks/openclaw
+        hasOpaPolicy:
+          type: boolean
+
+    # --- /api/admin/logs ---
+    AuditLogEntry:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        tool:
+          type: string
+        stack:
+          type: string
+        service:
+          type: string
+        command:
+          type: string
+        projectName:
+          type: string
+        allowed:
+          type: boolean
+        reason:
+          type: string
+        policy_name:
+          type: string
+        exitCode:
+          type: integer
+
+    # --- /api/admin/config ---
+    ConfigMap:
+      type: object
+      additionalProperties:
+        type: string
+      example:
+        CARAPA_BOX_API_TOKEN: s3cr3t
+        STACKS_DIR: /app/stacks
+
+    # --- /api/admin/stacks/{name}/policy ---
+    PolicyResponse:
+      type: object
+      required: [rego]
+      properties:
+        rego:
+          type: string
+          description: Raw Rego policy source
+
+    # --- /api/tools ---
+    ToolListEntry:
+      type: object
+      required: [name, description]
+      properties:
+        name:
+          type: string
+          example: sandbox_exec
+        description:
+          type: string
+          example: Execute a trusted stack override or image-built fallback without a shell.
+
+    # --- POST /api/tools/{name} response ---
+    ToolResponse:
+      type: object
+      required: [result, isError]
+      properties:
+        result:
+          type: string
+          description: Text output produced by the tool (may be JSON-encoded)
+        isError:
+          type: boolean
+          description: true when the tool itself returned an error (HTTP status is still 200 or 500)
+
+    ToolValidationError:
+      type: object
+      required: [error, details]
+      properties:
+        error:
+          type: string
+          example: Validation failed
+        details:
+          type: array
+          items:
+            type: object
+            description: Zod issue object
+
+    ToolNotFoundError:
+      type: object
+      required: [error, tool]
+      properties:
+        error:
+          type: string
+          example: Unknown tool
+        tool:
+          type: string
+          example: nonexistent_tool
+
+    # -----------------------------------------------------------------------
+    # Tool input schemas (used as POST /api/tools/{name} request bodies)
+    # -----------------------------------------------------------------------
+
+    # sandbox_list — no input
+    SandboxListInput:
+      type: object
+      properties: {}
+      additionalProperties: false
+
+    SandboxPsInput:
+      type: object
+      properties:
+        instance:
+          type: string
+          description: Filter by a specific instance ID/project name
+      additionalProperties: false
+
+    SandboxStartInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: "Name of the sandbox stack to start (e.g. 'openclaw', 'example')"
+        instance:
+          type: string
+          description: Instance ID for running multiple copies (e.g. 'user123'). If omitted, uses stack name.
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          description: Extra environment variables for lifecycle hooks. Do NOT include secrets.
+        service:
+          type: string
+          description: "Agent Compose service for relay token registration and the optional project .agent/after-start.sh hook (default: 'agent')"
+      additionalProperties: false
+
+    SandboxStopInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Name of the sandbox or instance to stop
+        instance:
+          type: string
+          description: Instance ID if running multiple copies
+      additionalProperties: false
+
+    SandboxStatusInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Name of the sandbox or instance
+        instance:
+          type: string
+          description: Instance ID if running multiple copies
+        service:
+          type: string
+          description: If set, return only this service's status
+      additionalProperties: false
+
+    SandboxExecInput:
+      type: object
+      required: [name, service, command]
+      properties:
+        name:
+          type: string
+          description: Name of the sandbox or instance
+        service:
+          type: string
+          description: "Name of the service (e.g. 'sandbox', 'browser')"
+        command:
+          type: string
+          description: "Single trusted-tool invocation (e.g. 'run-agent.sh /workspace/ipc/runs/123')"
+        instance:
+          type: string
+          description: Instance ID if running multiple copies
+        timeout:
+          type: number
+          description: Timeout in seconds. If not set, waits indefinitely.
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          description: Environment variables forwarded via docker compose exec -e (values live in the compose process env, not argv)
+      additionalProperties: false
+
+    SandboxPolicyCheckInput:
+      type: object
+      required: [name, service, command]
+      properties:
+        name:
+          type: string
+          description: Name of the sandbox/stack
+        service:
+          type: string
+          description: Service name
+        command:
+          type: string
+          description: Command to check
+        instance:
+          type: string
+          description: Instance ID if applicable
+      additionalProperties: false
+
+    SandboxNetworkPolicyReloadInput:
+      type: object
+      properties: {}
+      additionalProperties: false
+
+    SandboxLogsInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Name of the sandbox or instance
+        service:
+          type: string
+          description: Name of the service (optional if stack has a single service)
+        tail:
+          type: number
+          description: "Number of newest lines to show (default: 1000)"
+        instance:
+          type: string
+          description: Instance ID if running multiple copies
+      additionalProperties: false
+
+    SandboxCommandsInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Stack name
+        service:
+          type: string
+          description: "Service name (default: 'agent')"
+      additionalProperties: false
+
+    BuildServiceInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: "Service name as registered in config/managed-services.yaml (e.g. 'carapa-brain')"
+      additionalProperties: false    
+
+    BuildServiceStatusInput:
+      type: object
+      required: [name, requestedAt]
+      properties:
+        name:
+          type: string
+          description: "Service name as registered in config/managed-services.yaml"
+        requestedAt:
+          type: string
+          description: "requestedAt returned by build_service for a queued host build"
+      additionalProperties: false
+
+    SandboxGitInput:
+      type: object
+      required: [name, command]
+      properties:
+        name:
+          type: string
+          description: Name of the sandbox or instance
+        command:
+          type: string
+          description: "Git command to run (e.g. 'push origin develop', 'status', 'log --oneline -5')"
+        instance:
+          type: string
+          description: Instance ID if running multiple copies
+        service:
+          type: string
+          description: "Service name to exec into for local git commands (default: 'agent')"
+        localRepo:
+          type: string
+          description: Host-side repo path for remote git commands (overrides stack .env LOCAL_REPO)
+      additionalProperties: false
+      description: Requires ENABLE_SANDBOX_GIT=1
+
+    SandboxWorktreeInput:
+      type: object
+      required: [name, action]
+      properties:
+        name:
+          type: string
+          description: Name of the sandbox or instance
+        action:
+          type: string
+          enum: [add, remove, list, reset]
+          description: "Worktree operation: add creates a new worktree, remove deletes it, list shows all, reset discards all changes"
+        branch:
+          type: string
+          description: Branch name (required for add/remove/reset)
+        base:
+          type: string
+          description: Branch name to create from (for add) or reset to (for reset). Do not include 'origin/' prefix.
+        instance:
+          type: string
+          description: Instance ID if running multiple copies
+        localRepo:
+          type: string
+          description: Host-side LOCAL_REPO path (overrides stack .env)
+        symlinkFiles:
+          type: array
+          items:
+            type: string
+          description: "Files to symlink from main repo into new worktree (e.g. ['.env', 'config/local.php'])"
+        service:
+          type: string
+          description: "Service name to exec into (default: 'agent')"
+      additionalProperties: false
+      description: Requires ENABLE_SANDBOX_GIT=1
+
+    SandboxBranchInput:
+      type: object
+      required: [name, action, branch]
+      properties:
+        name:
+          type: string
+          description: Name of the sandbox or instance
+        action:
+          type: string
+          enum: [prepare_review, inspect, merge, archive, cleanup, reject, commit]
+          description: Lifecycle action
+        branch:
+          type: string
+          description: Task branch name
+        base:
+          type: string
+          description: "Default branch name (default: 'develop')"
+        instance:
+          type: string
+          description: Instance ID if running multiple copies
+        localRepo:
+          type: string
+          description: Host-side LOCAL_REPO path (overrides stack .env)
+        service:
+          type: string
+          description: "Service name to exec into (default: 'agent')"
+        autoPush:
+          type: boolean
+          description: "For merge: push default branch to remote after merge"
+        worktreePath:
+          type: string
+          description: "Relative worktree path (e.g. '.worktrees/my-branch')"
+        commitMessage:
+          type: string
+          description: "Commit message for uncommitted changes (default: auto-generated from branch name)"
+      additionalProperties: false
+      description: Requires ENABLE_SANDBOX_GIT=1
+
+    SandboxIssuesInput:
+      type: object
+      required: [name, action, git_repo]
+      properties:
+        name:
+          type: string
+          description: Name of the sandbox or instance
+        action:
+          type: string
+          enum: [list, get, list_comments]
+          description: The issue operation to perform
+        instance:
+          type: string
+          description: Instance ID if running multiple copies
+        service:
+          type: string
+          description: "Agent service whose relay client selects the account (default: agent)"
+        git_repo:
+          type: string
+          description: Git remote URL of the GitLab or GitHub repository
+        issue_number:
+          type: number
+          description: Issue number (required for get/list_comments)
+        state:
+          type: string
+          description: "Filter by state: open, closed, all (for list, default: open)"
+        page:
+          type: number
+          description: "Page number for list pagination (default: 1)"
+        per_page:
+          type: number
+          description: "Results per page for list (default: 20, max: 100)"
+      additionalProperties: false
+      description: Requires ENABLE_GIT_ISSUES=1
+
+    SandboxSshInput:
+      type: object
+      required: [name, action]
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]*$'
+        instance:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]*$'
+        action:
+          type: string
+          enum: [status, start, stop]
+      additionalProperties: false
+
+    SandboxPublishAppInput:
+      type: object
+      required: [name, id, action]
+      properties:
+        name:
+          type: string
+        instance:
+          type: string
+        id:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{0,63}$'
+        action:
+          type: string
+          enum: [status, publish, unpublish]
+        service:
+          type: string
+        targetPort:
+          type: integer
+          minimum: 1024
+          maximum: 65535
+        hostname:
+          type: string
+          maxLength: 253
+        aliases:
+          type: array
+          maxItems: 8
+          items:
+            type: string
+            maxLength: 253
+          description: "The project's admin-configured proxy hostname aliases; the app may use one as its hostname"
+      additionalProperties: false
+
+    SandboxProxyAliasesInput:
+      type: object
+      required: [name, aliases]
+      properties:
+        name:
+          type: string
+          description: Name of the sandbox stack
+        instance:
+          type: string
+          description: Instance ID if running multiple copies
+        aliases:
+          type: array
+          maxItems: 8
+          items:
+            type: string
+          description: Public hostname aliases for the generated nginx route
+      additionalProperties: false
+
+    RestartServiceInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Service name as registered in config/managed-services.yaml
+      additionalProperties: false
+
+    GroupListInput:
+      type: object
+      required: [folder]
+      properties:
+        folder:
+          type: string
+          description: Group folder of a project placed on this box
+        path:
+          type: string
+          description: "Relative directory (default: the group root)"
+      additionalProperties: false
+
+    GroupReadInput:
+      type: object
+      required: [folder, path]
+      properties:
+        folder:
+          type: string
+        path:
+          type: string
+        offset:
+          type: number
+        maxBytes:
+          type: number
+      additionalProperties: false
+
+    GroupWriteInput:
+      type: object
+      required: [folder, path]
+      properties:
+        folder:
+          type: string
+        path:
+          type: string
+        data:
+          type: string
+          description: File content; base64 when encoding is base64
+        encoding:
+          type: string
+          enum: [utf8, base64]
+        remove:
+          type: boolean
+          description: Delete the file (recursive for directories)
+      additionalProperties: false
+
+    SandboxIpcProjectsInput:
+      type: object
+      properties: {}
+      additionalProperties: false
+
+    IpcTarget:
+      type: object
+      properties:
+        tree:
+          type: string
+          enum: [ipc, group]
+          description: "'ipc' (default) is the sandbox IPC tree; 'group' is a project group directory on this box (project is then the group folder)"
+        project:
+          type: string
+          description: "IPC project directory '<stack>-<instance>' (alternative to name/instance), or the group folder when tree is group"
+        name:
+          type: string
+          description: Sandbox stack name
+        instance:
+          type: string
+          description: Instance ID; the IPC project is '<name>-<instance>'
+
+    SandboxIpcInput:
+      allOf:
+        - $ref: '#/components/schemas/IpcTarget'
+        - type: object
+          required: [ops]
+          properties:
+            ops:
+              type: array
+              maxItems: 500
+              items:
+                type: object
+                additionalProperties: true
+              description: "Operations applied in order, each returning its own result. Ops: stat, read, write, list, remove, mkdir, rename, prepareRuns."
+
+    SandboxIpcSyncInput:
+      allOf:
+        - $ref: '#/components/schemas/IpcTarget'
+        - type: object
+          required: [root]
+          properties:
+            root:
+              type: string
+              description: "Subtree relative to the project IPC directory, e.g. 'runs/run-123' or 'sessions'"
+            base:
+              type: object
+              description: "Last agreed state: relative path to [size, remote mtimeMs or null]"
+              additionalProperties:
+                type: array
+                minItems: 2
+                maxItems: 2
+                items:
+                  type: [number, "null"]
+            push:
+              type: array
+              maxItems: 2000
+              description: Caller-side changes, applied before the diff (base64 data)
+              items:
+                type: object
+                required: [op, path]
+                properties:
+                  op:
+                    type: string
+                    enum: [write, remove, mkdir]
+                  path:
+                    type: string
+                  data:
+                    type: string
+                  offset:
+                    type: number
+                  recursive:
+                    type: boolean
+            maxBytes:
+              type: number
+              description: Byte budget for returned file data
+            replicaId:
+              type: string
+            exclude:
+              type: array
+              maxItems: 50
+              items:
+                type: string
+                maxLength: 100
+              description: Additional directory names to skip
+
+    SandboxRelayTokenInput:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: "Agent container hostname key, e.g. '<stack>-<instance>-<service>-1'"
+        service:
+          type: string
+          maxLength: 100
+          description: "Optional service scope (e.g. 'carapa-mail')"
+        value:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Credential to store; omit with clear=true to delete
+        clear:
+          type: boolean
+          description: Delete the stored credential
+      additionalProperties: false
+
+    # --- Relay, provider accounts, MCP connections ---
+    RelayTokenBody:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          minLength: 1
+      additionalProperties: true
+
+    OkResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          example: true
+
+    ProviderAccountSnapshot:
+      type: object
+      description: Provider accounts, open logins and relay clients. Account and login entries are whitelisted public fields only; credentials are never returned.
+      properties:
+        accounts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        logins:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              accountId:
+                type: string
+              provider:
+                type: string
+              label:
+                type: string
+              state:
+                type: string
+                enum: [starting, waiting, authorizing, failed, expired]
+              expiresAt:
+                type: number
+              authorizationUrl:
+                type: string
+              userCode:
+                type: string
+              input:
+                type: string
+                enum: [code, callback, none]
+        clients:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    ProviderAccountStartRequest:
+      type: object
+      required: [provider, label, scope]
+      properties:
+        provider:
+          type: string
+          description: Account, API-key or integration provider id
+        label:
+          type: string
+          maxLength: 80
+        scope:
+          type: string
+          enum: [shared, client, project]
+          description: Sign-in logins accept shared or client only
+        client:
+          type: string
+          description: Relay client name (scope client)
+        accountId:
+          type: string
+          description: Sign an existing account in again instead of adding one
+        apiKey:
+          type: string
+          description: Key for API-key providers and project integrations (checked with the provider, installed at once)
+        expiresAt:
+          type: string
+          description: Key expiry date, YYYY-MM-DD (API-key accounts only)
+        workspaceId:
+          type: string
+          description: Anthropic API workspace ID (wrkspc_...)
+        host:
+          type: string
+          description: Code host server address, e.g. https://gitlab.example.com
+        project:
+          type: object
+          description: Sandbox instance of a project integration (scope project)
+          properties:
+            stack:
+              type: string
+            instance:
+              type: string
+        allow:
+          type: array
+          description: API calls a project integration may serve (scope project)
+          items:
+            type: object
+            properties:
+              method:
+                type: string
+              path:
+                type: string
+        route:
+          type: string
+          description: Custom integration route
+        baseUrl:
+          type: string
+          description: Custom integration base URL
+        auth:
+          type: object
+          description: Custom integration token placement (bearer, header, basic or query)
+          additionalProperties: true
+      additionalProperties: true
+
+    ProviderAccountStartResponse:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: Login ID (sign-in providers) or account ID (API keys)
+        installed:
+          type: boolean
+          description: Present and true when an API key was installed at once
+
+    ProviderAccountUpdateRequest:
+      type: object
+      description: Omitted keys are unchanged; null clears tier, capacity or expiresAt.
+      properties:
+        label:
+          type: string
+          maxLength: 80
+        tier:
+          type: [string, "null"]
+        capacity:
+          type: [number, "null"]
+        expiresAt:
+          type: [string, "null"]
+          description: YYYY-MM-DD, API-key accounts only
+        allow:
+          type: array
+          description: Project keys only
+          items:
+            type: object
+            properties:
+              method:
+                type: string
+              path:
+                type: string
+      additionalProperties: false
+
+    LoginCompleteRequest:
+      type: object
+      required: [value]
+      properties:
+        value:
+          type: string
+          description: Authorization code or callback value (max 16 KiB for MCP connections)
+
+    McpConnectionTarget:
+      type: object
+      required: [service, project]
+      properties:
+        service:
+          type: string
+        project:
+          type: string
+
+    McpConnectionsResponse:
+      type: object
+      properties:
+        services:
+          type: array
+          items:
+            type: object
+            properties:
+              service:
+                type: string
+              host:
+                type: string
+              projects:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    project:
+                      type: string
+                    state:
+                      type: string
+                      enum: [connected, loginRequired, refreshFailed]
+        logins:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              service:
+                type: string
+              project:
+                type: string
+              state:
+                type: string
+                enum: [starting, awaitingCallback, failed]
+              authorizationUrl:
+                type: string
+              expiresAt:
+                type: number
+              error:
+                type: string
+
+    RelayIdentity:
+      type: object
+      required: [stack, instance]
+      properties:
+        stack:
+          type: string
+        instance:
+          type: string
+
+    AdminToolResponse:
+      type: object
+      required: [result, isError]
+      properties:
+        result:
+          type: string
+        isError:
+          type: boolean
+
+    # --- /api/browser and /api/tmux ---
+    BrowserAttachRequest:
+      type: object
+      required: [stack, service, sessionId]
+      properties:
+        stack:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$'
+        service:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$'
+        instance:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$'
+        sessionId:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$'
+
+    TmuxTarget:
+      type: object
+      required: [stack, service, session]
+      properties:
+        stack:
+          type: string
+          minLength: 1
+        service:
+          type: string
+          minLength: 1
+        instance:
+          type: string
+        session:
+          type: string
+          minLength: 1
+
+    TmuxAttachRequest:
+      allOf:
+        - $ref: '#/components/schemas/TmuxTarget'
+        - type: object
+          properties:
+            streamId:
+              type: string
+            cols:
+              type: integer
+              minimum: 1
+            rows:
+              type: integer
+              minimum: 1
+            lines:
+              type: integer
+              minimum: 1
+              description: Scrollback lines to capture
+
+    TmuxExecRequest:
+      allOf:
+        - $ref: '#/components/schemas/TmuxTarget'
+        - type: object
+          required: [input]
+          properties:
+            input:
+              type: string
+              minLength: 1
+              description: Keystrokes; decoded length is capped at 8192
+            inputBase64:
+              type: boolean
+              description: Set when input is base64 encoded
+            cols:
+              type: integer
+              minimum: 1
+            rows:
+              type: integer
+              minimum: 1
+
+    TmuxResizeRequest:
+      allOf:
+        - $ref: '#/components/schemas/TmuxTarget'
+        - type: object
+          required: [cols, rows]
+          properties:
+            cols:
+              type: integer
+              minimum: 1
+            rows:
+              type: integer
+              minimum: 1
+
+    TmuxDetachRequest:
+      allOf:
+        - $ref: '#/components/schemas/TmuxTarget'
+        - type: object
+          required: [streamId]
+          properties:
+            streamId:
+              type: string
+              minLength: 1
+
+
+  # -------------------------------------------------------------------------
+  # Shared responses
+  # -------------------------------------------------------------------------
+  responses:
+    Unauthorized:
+      description: Missing or invalid Bearer token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Unauthorized
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    AdminUnavailable:
+      description: Admin access requires a separate CARAPA_BOX_ADMIN_TOKEN (missing, or identical to the API token) and the request was not accepted with the API token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ProviderOperationFailed:
+      description: Operation refused or failed (message is safe to show an admin; native provider errors are never returned)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TmuxDisabled:
+      description: Tmux surface disabled (ENABLE_SANDBOX_TMUX unset) or stack/instance not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TmuxForbidden:
+      description: Denied by stack policy (`error`, `reason`, `policy_name`), or no CARAPA_BOX_API_TOKEN configured
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              reason:
+                type: string
+              policy_name:
+                type: string
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+
+  # ── Health ──────────────────────────────────────────────────────────────
+  /health:
+    get:
+      operationId: getHealth
+      summary: Health check
+      description: Returns server status. No authentication required.
+      tags: [health]
+      security: []
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /status:
+    get:
+      operationId: getStatus
+      summary: Status check (alias for /health)
+      description: Returns server status. No authentication required.
+      tags: [health]
+      security: []
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  # ── Admin API ────────────────────────────────────────────────────────────
+  /api/admin/info:
+    get:
+      operationId: getAdminInfo
+      summary: System overview
+      description: Returns uptime, active sandboxes, egress proxy state, and feature flags.
+      tags: [admin]
+      security:
+        - AdminToken: []
+      responses:
+        '200':
+          description: System overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminInfoResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/stacks:
+    get:
+      operationId: listAdminStacks
+      summary: List all registered stacks
+      description: Returns all stack definitions loaded from STACKS_DIR.
+      tags: [admin]
+      security:
+        - AdminToken: []
+      responses:
+        '200':
+          description: Array of stack entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StackEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/logs:
+    get:
+      operationId: getAdminLogs
+      summary: Audit logs
+      description: Returns the last 100 entries from the audit log (JSONL file at AUDIT_LOG_PATH).
+      tags: [admin]
+      security:
+        - AdminToken: []
+      responses:
+        '200':
+          description: Array of audit log entries (most recent 100)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditLogEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/config:
+    get:
+      operationId: getAdminConfig
+      summary: Read .env configuration
+      description: Returns key/value pairs from the root or egress-proxy .env file.
+      tags: [admin]
+      security:
+        - AdminToken: []
+      parameters:
+        - name: file
+          in: query
+          description: "Which .env file to read: 'root' (default) or 'egress'"
+          schema:
+            type: string
+            enum: [root, egress]
+            default: root
+      responses:
+        '200':
+          description: Key/value map of the .env file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigMap'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+    post:
+      operationId: updateAdminConfig
+      summary: Write .env configuration
+      description: "Merges the supplied key/value pairs into the target .env file. Root config changes are also applied to the running process.env. With file=both the body is {\"root\": ConfigMap, \"egress\": ConfigMap}; egress is written first and restored if the root write fails, so both files change or neither."
+      tags: [admin]
+      security:
+        - AdminToken: []
+      parameters:
+        - name: file
+          in: query
+          description: "Which .env file to write: 'root' (default), 'egress' or 'both' (paired save)"
+          schema:
+            type: string
+            enum: [root, egress, both]
+            default: root
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigMap'
+      responses:
+        '200':
+          description: Write succeeded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/stacks/{name}/policy:
+    get:
+      operationId: getStackPolicy
+      summary: Read stack OPA policy source
+      description: Returns the raw Rego source for the stack's policy.rego file.
+      tags: [admin]
+      security:
+        - AdminToken: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Stack name
+          schema:
+            type: string
+            example: openclaw
+      responses:
+        '200':
+          description: Rego policy source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /admin:
+    get:
+      operationId: redirectAdminDashboard
+      summary: Redirect to the admin dashboard
+      description: Responds 301 to `/admin/index.html` (static files are served from `public/`). `/admin/` behaves the same. No authentication.
+      tags: [admin]
+      security: []
+      responses:
+        '301':
+          description: Redirect to /admin/index.html
+
+  /api/admin/relay-token/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: Agent container hostname key
+        schema:
+          type: string
+      - name: service
+        in: query
+        required: false
+        description: "Service scope, e.g. carapa-mail addresses the per-project mail MCP token instead of the bare (board) token"
+        schema:
+          type: string
+    get:
+      operationId: getRelayToken
+      summary: Read a relay token
+      description: Used by the api-relay to pull per-sandbox tokens.
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      responses:
+        '200':
+          description: Stored token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelayTokenBody'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+    post:
+      operationId: createRelayToken
+      summary: Store a relay token
+      description: Same behavior as PUT.
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelayTokenBody'
+      responses:
+        '200':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '400':
+          description: Body must be { token } with a non-empty string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+    put:
+      operationId: putRelayToken
+      summary: Store a relay token
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelayTokenBody'
+      responses:
+        '200':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '400':
+          description: Body must be { token } with a non-empty string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+    delete:
+      operationId: deleteRelayToken
+      summary: Delete a relay token
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      responses:
+        '200':
+          description: Deleted (also when nothing was stored)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/relay-identity/{name}:
+    get:
+      operationId: getRelayIdentity
+      summary: Map an egress network suffix to a project identity
+      description: Maps a compose project name to the board project identity (stack and instance) the api-relay authorizes against.
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Compose project name (`[\w-]{1,128}`)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Project identity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelayIdentity'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/provider-accounts:
+    get:
+      operationId: listProviderAccounts
+      summary: List provider accounts, logins and relay clients
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      responses:
+        '200':
+          description: Snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderAccountSnapshot'
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/provider-accounts/usage:
+    get:
+      operationId: getProviderAccountsUsage
+      summary: Provider account usage
+      description: Read-only usage per account, cached for 60 seconds. Shape varies by provider.
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      responses:
+        '200':
+          description: Usage data
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/provider-accounts/models:
+    get:
+      operationId: getProviderAccountsModels
+      summary: Models available per provider account
+      description: Cached for 10 minutes. Shape varies by provider.
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      responses:
+        '200':
+          description: Model data
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/provider-accounts/order:
+    post:
+      operationId: reorderProviderAccounts
+      summary: Store the manual account order
+      description: "`ids` must be exactly the current account ids. Order never affects routing."
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Updated snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderAccountSnapshot'
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/provider-accounts/login:
+    post:
+      operationId: startProviderAccountLogin
+      summary: Start a login or save an API key
+      description: Sign-in providers start a login worker and return the login id. API-key providers and project integrations check the key with the provider and install it at once.
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderAccountStartRequest'
+      responses:
+        '200':
+          description: Login started or key installed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderAccountStartResponse'
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/provider-accounts/login/{id}/complete:
+    post:
+      operationId: completeProviderAccountLogin
+      summary: Submit the authorization code or callback for a login
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Login id
+          schema:
+            type: string
+            pattern: '^[a-f0-9-]{36}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginCompleteRequest'
+      responses:
+        '200':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/provider-accounts/login/{id}:
+    delete:
+      operationId: cancelProviderAccountLogin
+      summary: Cancel a login
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Login id
+          schema:
+            type: string
+            pattern: '^[a-f0-9-]{36}$'
+      responses:
+        '200':
+          description: Cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/provider-accounts/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Account id
+        schema:
+          type: string
+          pattern: '^[a-f0-9-]{36}$'
+    patch:
+      operationId: updateProviderAccount
+      summary: Edit an account
+      description: Sets label, tier, capacity, key expiry or allowed calls. Returns the updated account entry.
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderAccountUpdateRequest'
+      responses:
+        '200':
+          description: Updated account entry
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+    delete:
+      operationId: deleteProviderAccount
+      summary: Remove an account
+      description: Removes the account, its stored credential and any open login. Nothing is revoked at the provider.
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      responses:
+        '200':
+          description: Updated snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderAccountSnapshot'
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/mcp-connections:
+    get:
+      operationId: listMcpConnections
+      summary: List MCP OAuth services, projects and logins
+      description: Requires PROVIDER_ACCOUNTS_DIR; credentials are never read or returned.
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      responses:
+        '200':
+          description: Services and open logins
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpConnectionsResponse'
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/mcp-connections/login:
+    post:
+      operationId: startMcpConnectionLogin
+      summary: Start an MCP OAuth login
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpConnectionTarget'
+      responses:
+        '200':
+          description: Login attempt created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id:
+                    type: string
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/mcp-connections/login/{id}/complete:
+    post:
+      operationId: completeMcpConnectionLogin
+      summary: Submit the OAuth callback value for a login
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-f0-9-]{36}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginCompleteRequest'
+      responses:
+        '200':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/mcp-connections/login/{id}:
+    delete:
+      operationId: cancelMcpConnectionLogin
+      summary: Cancel an MCP OAuth login
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-f0-9-]{36}$'
+      responses:
+        '200':
+          description: Cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/mcp-connections/revoke:
+    post:
+      operationId: revokeMcpConnection
+      summary: Revoke an MCP OAuth connection
+      tags: [admin]
+      security:
+        - ApiToken: []
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpConnectionTarget'
+      responses:
+        '200':
+          description: Revoke intent recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '400':
+          $ref: '#/components/responses/ProviderOperationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  /api/admin/tools/{name}:
+    post:
+      operationId: invokeAdminTool
+      summary: Run a lifecycle tool from the admin dashboard
+      description: Only `sandbox_start` and `sandbox_stop` are allowed (same schemas as /api/tools/{name}); any other tool name or method returns 404. Arbitrary tool dispatch stays on /api/tools.
+      tags: [admin]
+      security:
+        - AdminToken: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [sandbox_start, sandbox_stop]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/SandboxStartInput'
+                - $ref: '#/components/schemas/SandboxStopInput'
+      responses:
+        '200':
+          description: Tool completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminToolResponse'
+        '400':
+          description: Validation failed or invalid tool name encoding
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          description: Tool reported an error (`result`, `isError` true) or threw (`error`, `code`)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AdminToolResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/AdminUnavailable'
+
+  # ── REST Tool Adapter ────────────────────────────────────────────────────
+  /api/tools:
+    get:
+      operationId: listTools
+      summary: List registered tools
+      description: Returns name and description for every tool registered in the tool registry. The registry is populated at server startup.
+      tags: [tools]
+      security:
+        - ApiToken: []
+      responses:
+        '200':
+          description: Array of tool descriptors
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ToolListEntry'
+              example:
+                - name: sandbox_list
+                  description: List all available sandbox environments (stacks) that can be started.
+                - name: sandbox_exec
+                  description: Execute a trusted stack override or image-built fallback without a shell.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/tools/{name}:
+    post:
+      operationId: invokeTool
+      summary: Invoke a tool
+      description: |
+        Dispatches the request to the named MCP tool. The request body must
+        match the tool's Zod schema; unknown fields are rejected. The response
+        always has `result` (text output) and `isError` (boolean).
+
+        ### Always-available tools
+
+        | Tool name | Input schema ref |
+        |-----------|-----------------|
+        | `sandbox_list` | [SandboxListInput](#/components/schemas/SandboxListInput) |
+        | `sandbox_ps` | [SandboxPsInput](#/components/schemas/SandboxPsInput) |
+        | `sandbox_start` | [SandboxStartInput](#/components/schemas/SandboxStartInput) |
+        | `sandbox_stop` | [SandboxStopInput](#/components/schemas/SandboxStopInput) |
+        | `sandbox_status` | [SandboxStatusInput](#/components/schemas/SandboxStatusInput) |
+        | `sandbox_exec` | [SandboxExecInput](#/components/schemas/SandboxExecInput) |
+        | `sandbox_policy_check` | [SandboxPolicyCheckInput](#/components/schemas/SandboxPolicyCheckInput) |
+        | `sandbox_network_policy_reload` | [SandboxNetworkPolicyReloadInput](#/components/schemas/SandboxNetworkPolicyReloadInput) |
+        | `sandbox_logs` | [SandboxLogsInput](#/components/schemas/SandboxLogsInput) |
+        | `sandbox_commands` | [SandboxCommandsInput](#/components/schemas/SandboxCommandsInput) |
+        | `build_service` | [BuildServiceInput](#/components/schemas/BuildServiceInput) |
+        | `build_service_status` | [BuildServiceStatusInput](#/components/schemas/BuildServiceStatusInput) |
+        | `restart_service` | [RestartServiceInput](#/components/schemas/RestartServiceInput) |
+        | `sandbox_ssh` | [SandboxSshInput](#/components/schemas/SandboxSshInput) |
+        | `sandbox_publish_app` | [SandboxPublishAppInput](#/components/schemas/SandboxPublishAppInput) |
+        | `sandbox_proxy_aliases` | [SandboxProxyAliasesInput](#/components/schemas/SandboxProxyAliasesInput) |
+        | `group_list` | [GroupListInput](#/components/schemas/GroupListInput) |
+        | `group_read` | [GroupReadInput](#/components/schemas/GroupReadInput) |
+        | `group_write` | [GroupWriteInput](#/components/schemas/GroupWriteInput) |
+        | `sandbox_ipc_projects` | [SandboxIpcProjectsInput](#/components/schemas/SandboxIpcProjectsInput) |
+        | `sandbox_ipc` | [SandboxIpcInput](#/components/schemas/SandboxIpcInput) |
+        | `sandbox_ipc_sync` | [SandboxIpcSyncInput](#/components/schemas/SandboxIpcSyncInput) |
+        | `sandbox_relay_token` | [SandboxRelayTokenInput](#/components/schemas/SandboxRelayTokenInput) |
+
+        ### Feature-flagged tools
+
+        | Tool name | Requires env var | Input schema ref |
+        |-----------|-----------------|-----------------|
+        | `sandbox_git` | `ENABLE_SANDBOX_GIT` | [SandboxGitInput](#/components/schemas/SandboxGitInput) |
+        | `sandbox_worktree` | `ENABLE_SANDBOX_GIT` | [SandboxWorktreeInput](#/components/schemas/SandboxWorktreeInput) |
+        | `sandbox_branch` | `ENABLE_SANDBOX_GIT` | [SandboxBranchInput](#/components/schemas/SandboxBranchInput) |
+        | `sandbox_issues` | `ENABLE_GIT_ISSUES` | [SandboxIssuesInput](#/components/schemas/SandboxIssuesInput) |
+      tags: [tools]
+      security:
+        - ApiToken: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Tool name (see table above)
+          schema:
+            type: string
+            example: sandbox_exec
+      requestBody:
+        required: true
+        description: Tool arguments. Must conform to the tool's input schema.
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Tool-specific arguments. See tool input schemas in components/schemas.
+            examples:
+              sandbox_list:
+                summary: sandbox_list — list available stacks
+                value: {}
+              sandbox_start:
+                summary: sandbox_start — start a stack
+                value:
+                  name: openclaw
+                  instance: user42
+              sandbox_exec:
+                summary: sandbox_exec — run a trusted stack override or image-built fallback
+                value:
+                  name: openclaw
+                  service: agent
+                  command: run-agent.sh /workspace/ipc/runs/123
+              sandbox_stop:
+                summary: sandbox_stop — stop a running sandbox
+                value:
+                  name: openclaw
+                  instance: user42
+      responses:
+        '200':
+          description: Tool completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolResponse'
+              example:
+                result: "openclaw-user42  running"
+                isError: false
+        '400':
+          description: Request body failed Zod schema validation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Tool name not found in registry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolNotFoundError'
+        '500':
+          description: Tool returned an error or threw an unhandled exception
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ToolResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
+
+  # ── Browser viewer ───────────────────────────────────────────────────────
+  /api/browser/attach:
+    post:
+      operationId: attachBrowser
+      summary: Attach a browser viewer (NDJSON stream)
+      description: |
+        Opens an exec stream to the stack's trusted `browser-viewer` helper and
+        streams its output as NDJSON, one JSON frame per line. The first frame is
+        `{"type":"attached","viewerId":"<uuid>"}`; a `{"type":"heartbeat"}` frame
+        follows every 15 seconds. Use the viewer id with `/api/browser/{id}/input`
+        and `DELETE /api/browser/{id}`. Disconnecting closes the viewer. At most 64
+        viewers; request body is capped at 64 KiB. Accepts only the API token.
+      tags: [browser]
+      security:
+        - ApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrowserAttachRequest'
+      responses:
+        '200':
+          description: NDJSON stream of viewer frames
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: Request too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Browser viewer capacity reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Viewer could not be opened (stack not found, policy denied, service not running)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/browser/{id}/input:
+    post:
+      operationId: sendBrowserInput
+      summary: Send input frames to a browser viewer
+      description: Body is a JSON array of at most 128 strings, each a single-line JSON message. Invalid or backpressured input closes the viewer.
+      tags: [browser]
+      security:
+        - ApiToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: viewerId from the attach stream
+          schema:
+            type: string
+            pattern: '^[a-f0-9-]{36}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              maxItems: 128
+              items:
+                type: string
+      responses:
+        '200':
+          description: Input forwarded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '410':
+          description: Viewer disconnected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Browser input too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/browser/{id}:
+    delete:
+      operationId: detachBrowser
+      summary: Close a browser viewer
+      description: Idempotent; returns ok even when the viewer is already gone.
+      tags: [browser]
+      security:
+        - ApiToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: viewerId from the attach stream
+          schema:
+            type: string
+            pattern: '^[a-f0-9-]{36}$'
+      responses:
+        '200':
+          description: Closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Tmux REST + SSE adapter ──────────────────────────────────────────────
+  /api/tmux/attach:
+    post:
+      operationId: attachTmux
+      summary: Attach to a tmux session (SSE)
+      description: |
+        Streams pane output as Server-Sent Events: `event: init` with
+        `{streamId, cols, rows, scrollback}`, then `event: delta` with
+        `{streamId, delta}`, `event: error` on startup failure and a final
+        `event: exit` with `{streamId, reason}` when the shell exits. Keep-alive
+        comments are sent periodically. The stream stays open until the client
+        disconnects. All /api/tmux routes return 404 unless ENABLE_SANDBOX_TMUX is
+        set, and accept only the API token (never the admin token).
+      tags: [tmux]
+      security:
+        - ApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TmuxAttachRequest'
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/TmuxForbidden'
+        '404':
+          $ref: '#/components/responses/TmuxDisabled'
+
+  /api/tmux/exec:
+    post:
+      operationId: execTmux
+      summary: Send keystrokes to a tmux session
+      description: The live pane echo arrives over the attach stream, not in this response.
+      tags: [tmux]
+      security:
+        - ApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TmuxExecRequest'
+      responses:
+        '200':
+          description: Input sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/TmuxForbidden'
+        '404':
+          $ref: '#/components/responses/TmuxDisabled'
+        '500':
+          description: tmux returned non-zero or failed (`error`, optionally `stderr` and `exitCode`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/tmux/resize:
+    post:
+      operationId: resizeTmux
+      summary: Resize a tmux pane
+      tags: [tmux]
+      security:
+        - ApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TmuxResizeRequest'
+      responses:
+        '200':
+          description: Resized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/TmuxForbidden'
+        '404':
+          $ref: '#/components/responses/TmuxDisabled'
+        '500':
+          description: tmux returned non-zero or failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/tmux/detach:
+    delete:
+      operationId: detachTmux
+      summary: Kill a tmux session and stop its reader
+      description: The JSON body is required even though this is a DELETE.
+      tags: [tmux]
+      security:
+        - ApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TmuxDetachRequest'
+      responses:
+        '200':
+          description: Detached
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  exitCode:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/TmuxForbidden'
+        '404':
+          $ref: '#/components/responses/TmuxDisabled'
+        '500':
+          description: Detach failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── MCP Streamable HTTP Transport ────────────────────────────────────────
+  /mcp:
+    post:
+      operationId: mcpPost
+      summary: MCP — initialize or send a message
+      description: |
+        MCP Streamable HTTP transport endpoint. A new session is created on the
+        first POST (must be an `initialize` request). Subsequent requests must
+        include either a `sessionId` query parameter or the `Mcp-Session-Id`
+        header.
+
+        Responses may be `application/json` (single response) or
+        `text/event-stream` (streamed SSE responses).
+      tags: [mcp]
+      security:
+        - ApiToken: []
+      parameters:
+        - name: sessionId
+          in: query
+          required: false
+          description: Resume an existing session
+          schema:
+            type: string
+            format: uuid
+        - name: Mcp-Session-Id
+          in: header
+          required: false
+          description: Resume an existing session (alternative to query param)
+          schema:
+            type: string
+            format: uuid
+        - name: Mcp-Protocol-Version
+          in: header
+          required: false
+          schema:
+            type: string
+            example: "2025-03-26"
+      requestBody:
+        required: true
+        description: JSON-RPC 2.0 MCP request
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jsonrpc, method]
+              properties:
+                jsonrpc:
+                  type: string
+                  enum: ["2.0"]
+                id:
+                  oneOf:
+                    - type: string
+                    - type: integer
+                method:
+                  type: string
+                  example: initialize
+                params:
+                  type: object
+            example:
+              jsonrpc: "2.0"
+              id: 1
+              method: initialize
+              params:
+                protocolVersion: "2025-03-26"
+                capabilities: {}
+                clientInfo:
+                  name: my-client
+                  version: "1.0"
+      responses:
+        '200':
+          description: JSON-RPC response or SSE stream
+          content:
+            application/json:
+              schema:
+                type: object
+                description: JSON-RPC 2.0 response
+            text/event-stream:
+              schema:
+                type: string
+                description: Server-sent events stream of JSON-RPC responses
+        '400':
+          description: No existing session; send POST initialize first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    get:
+      operationId: mcpGet
+      summary: MCP — open SSE stream for an existing session
+      description: |
+        Opens a long-lived Server-Sent Events stream for an existing MCP
+        session. The session must have been created with a POST first.
+
+        Note: Claude Code does not send `Accept: text/event-stream` on this
+        request; the server accepts it anyway for compatibility.
+      tags: [mcp]
+      security:
+        - ApiToken: []
+      parameters:
+        - name: sessionId
+          in: query
+          required: false
+          description: Existing session ID
+          schema:
+            type: string
+            format: uuid
+        - name: Mcp-Session-Id
+          in: header
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'

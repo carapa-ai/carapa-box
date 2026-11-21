@@ -1,0 +1,29 @@
+{
+  "name": "carapa-box",
+  "version": "0.1.0+codex.20260912114630",
+  "description": "Manage local and remote CarapaBox controllers through direct MCP connections and operator workflows.",
+  "author": {
+    "name": "Regun Software SRL"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "CarapaBox",
+    "shortDescription": "Manage local and remote CarapaBox sandboxes.",
+    "longDescription": "Connect Codex directly to named CarapaBox controllers, manage sandboxes, and administer Linux hosts, including ingress for HTTP/SSH access and egress proxies for outbound policies and provider relays.",
+    "developerName": "Carapa",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Connect my CarapaBox hosts.",
+      "Show sandboxes on my CarapaBox controllers.",
+      "Help me set up a CarapaBox controller."
+    ],
+    "composerIcon": "./assets/carapa-box.png",
+    "logo": "./assets/carapa-box.png",
+    "logoDark": "./assets/carapa-box.png",
+    "websiteURL": "https://carapa.ai"
+  }
+}

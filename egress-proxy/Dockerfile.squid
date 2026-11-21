@@ -1,0 +1,70 @@
+# ── Hardened Squid forward proxy ─────────────────────────────────────────
+# Multi-stage build: installs squid in full Alpine, then copies the binary,
+# shared libraries, and CA certs into DHI alpine-base.
+# Uses musl libc (not glibc) — eliminates glibc CVE surface entirely.
+# Runs as proxy user (UID 31, renamed from Alpine's 'squid') after entrypoint privilege transition.
+#
+# Security items addressed: #4 (DHI), #5 (digest pin), #6 (CVE scan), #7 (minimal pkgs)
+
+# ── Build stage — full Alpine with apk ──────────────────────────────────
+FROM alpine:3.23 AS build
+
+# squid           — forward proxy (core service)
+# ca-certificates — TLS certificate validation for CONNECT tunnels
+RUN apk add --no-cache squid ca-certificates
+
+# Entrypoint runs as 65532:65532 — add nonroot user matching that UID
+RUN echo "nonroot:x:65532:65532:nonroot:/nonexistent:/sbin/nologin" >> /etc/passwd && \
+    echo "nonroot:x:65532:" >> /etc/group
+
+# Prepare runtime directories with correct ownership
+RUN mkdir -p /var/log/squid /var/spool/squid /run /etc/squid && \
+    chown -R 65532:65532 /var/log/squid /var/spool/squid
+
+# ── Runtime stage — DHI distroless Alpine ───────────────────────────────
+# dhi.io/alpine-base:3.23 — pinned 2026-09-22
+FROM dhi.io/alpine-base:3.23@sha256:b9d3f74989db66757080994a59c89268bd2e72e83b5d4784969addec65ab3530
+
+LABEL org.opencontainers.image.title="egress-proxy-squid" \
+      org.opencontainers.image.description="Hardened Squid forward proxy with domain allowlist" \
+      org.opencontainers.image.version="1.0.0"
+
+# Copy passwd/group from build stage (includes proxy user)
+# DHI base has read-only /etc/passwd — COPY overwrites cleanly
+COPY --from=build /etc/passwd /etc/passwd
+COPY --from=build /etc/group /etc/group
+COPY --from=build /etc/shadow /etc/shadow
+
+# Copy squid binary and helpers
+COPY --from=build /usr/sbin/squid /usr/sbin/squid
+COPY --from=build /usr/lib/squid/ /usr/lib/squid/
+COPY --from=build /usr/share/squid/ /usr/share/squid/
+
+# Copy shared libraries needed by squid (musl-based, no glibc)
+COPY --from=build /usr/lib/lib*.so* /usr/lib/
+
+# Copy CA certificates for TLS CONNECT tunnels
+COPY --from=build /etc/ssl/certs/ /etc/ssl/certs/
+COPY --from=build /usr/share/ca-certificates/ /usr/share/ca-certificates/
+
+# Copy pre-built runtime directories with correct ownership
+COPY --from=build /etc/squid/ /etc/squid/
+COPY --from=build /var/log/squid/ /var/log/squid/
+COPY --from=build /var/spool/squid/ /var/spool/squid/
+
+# alpine-base has busybox — provides sh, sed, cp, chown, tail, mkdir
+# No need to copy coreutils separately
+
+# Config and entrypoint are bind-mounted at runtime (not baked in)
+# See docker-compose.yml volumes section
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD if [ -s /etc/squid/squid-generated.conf ]; then squid -k check -f /etc/squid/squid-generated.conf; else squid -k check -f /run/squid.conf; fi || exit 1
+
+# Squid starts as root via entrypoint, then drops to proxy user (UID 31)
+# via setuid/setgid — no-new-privileges is intentionally omitted
+EXPOSE 3128
+
+USER 65532:65532
+
+ENTRYPOINT ["/bin/sh", "/etc/squid/entrypoint.sh"]

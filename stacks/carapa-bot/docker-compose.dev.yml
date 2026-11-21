@@ -1,0 +1,6 @@
+# Optional operator override. Explicit /usr/local/stack-cli-bin/<command> calls
+# use these files; bare sandbox_exec calls use the base file's command source.
+services:
+  agent:
+    volumes:
+      - ${STACK_DIR}/bin:/usr/local/stack-cli-bin:ro

@@ -1,0 +1,17 @@
+# Base services for carapa-box to manage. Add your services here. Do not edit carapa-*.yaml files.
+carapa-board:
+  # Operator-only Compose project (deployment compose file + .env), kept outside
+  # every sandbox mount. buildDir is the repository used as the build context.
+  composeDir: /home/youruser/my-stacks/carapa-board
+  buildDir: /home/youruser/carapa-board
+  # Paths referenced by file-backed Compose secrets/configs and seccomp profiles
+  # must be visible to the short-lived Compose helper at the same location.
+  helperReadOnlyPaths:
+    - /home/youruser/my-stacks/security
+    - /home/youruser/.carapa/secrets/board
+  healthUrl: http://host.docker.internal:3000/health
+  service: carapa-board
+carapa-brain:
+  # Build-only: without composeDir, restart_service refuses this service.
+  buildDir: /home/youruser/carapa-brain
+  service: carapa-brain

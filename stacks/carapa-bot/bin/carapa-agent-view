@@ -1,0 +1,5 @@
+#!/bin/sh
+# Rebuild this container's ~/.agent/{skills,rules} view from the shared agent home.
+set -eu
+BIN_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec bun --no-env-file "$BIN_DIR/runtime/agent-view.ts" "$@"

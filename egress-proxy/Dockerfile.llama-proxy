@@ -1,0 +1,51 @@
+# ── Hardened HTTP forwarder for local LLM (llama.cpp / Ollama) ─────────
+# Replaces the socat passthrough (still available as Dockerfile.llama-proxy-socat).
+# Adds an Anthropic-format request-side transform that strips the
+# `x-anthropic-billing-header` system block, which carries a per-call hash
+# that would otherwise sit at byte 0 of the rendered system prompt and
+# defeat llama.cpp's KV-cache prefix reuse on every request.
+#
+# Security: multi-stage build, digest-pinned DHI distroless Alpine runtime,
+# Node binary + ldd deps only, non-root, no shell required to run.
+# Compose adds: read_only, seccomp, apparmor, cap_drop ALL, no-new-privileges.
+
+# ── Build stage — full Alpine with apk ──────────────────────────────────
+FROM alpine:3.23 AS build
+
+# nodejs — runtime for llama-proxy.mjs (no other packages needed; pure
+# stdlib http server, no npm install)
+RUN apk add --no-cache nodejs
+
+# Collect Node binary and its shared library dependencies
+RUN mkdir -p /deps/usr/bin /deps/usr/lib && \
+    cp /usr/bin/node /deps/usr/bin/ && \
+    for lib in $(ldd /usr/bin/node 2>/dev/null | awk '/=>/{print $3}'); do \
+      cp "$lib" /deps/usr/lib/ 2>/dev/null || true; \
+    done
+
+# ── Runtime stage — DHI distroless Alpine ───────────────────────────────
+# dhi.io/alpine-base:3.23 — pinned 2026-09-22 (same pin as api-relay)
+FROM dhi.io/alpine-base:3.23@sha256:b9d3f74989db66757080994a59c89268bd2e72e83b5d4784969addec65ab3530
+
+LABEL org.opencontainers.image.title="egress-proxy-llama-proxy" \
+      org.opencontainers.image.description="HTTP forwarder for local LLM (llama.cpp/Ollama) with Anthropic billing-header strip for KV-cache hit-rate" \
+      org.opencontainers.image.version="2.0.0"
+
+# Copy Node binary and runtime libraries from build stage
+COPY --from=build /deps/usr/bin/node /usr/bin/node
+COPY --from=build /deps/usr/lib/ /usr/lib/
+
+WORKDIR /app
+
+# Bake the proxy script into the image — immutable, not bind-mounted
+COPY llama-proxy.mjs /app/
+
+# Non-root user — numeric UID (no adduser in distroless base)
+USER 65532:65532
+
+EXPOSE 3001 8880 11434
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=3s --retries=3 \
+  CMD ["node", "-e", "require('http').get('http://127.0.0.1:'+(process.env.PORTS||'8880').split(',')[0]+'/_health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+
+ENTRYPOINT ["node", "/app/llama-proxy.mjs"]

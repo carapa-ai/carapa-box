@@ -1,0 +1,245 @@
+# ── CarapaBox Controller ──────────────────────────────────────────────────
+# Runs the MCP server in a hardened container with Docker CLI access.
+#
+# Prerequisites:
+#   1. Set SANDBOX_HOST_DIR in .env (absolute host path of this project)
+#   2. Build the image:  docker compose build
+#   3. Load AppArmor:    sudo bash security/install-apparmor.sh
+#   4. Start:            docker compose up -d
+#
+# The container needs the Docker socket to manage compose stacks.
+# All other access is read-only with a read-only root filesystem.
+#
+# Agents have NO route to CarapaBox — sandbox-relay is not configured in any
+# agent relay-client. CarapaBoard manages sandbox lifecycle via the REST API.
+# Only operator tools (IDEs) may have sandbox-relay access via a separate config.
+#
+# Operator-only deployment: copy this file into a private directory outside
+# every sandbox mount, keep .env beside it, and set CARAPA_BOX_SOURCE_DIR to this
+# checkout (and CARAPA_BOX_SECCOMP_DIR to private copies of the seccomp
+# profiles). Compose then never reads agent-editable deployment files. See
+# docs/installation-data.md.
+#
+# Host debug mode:
+#   Stop this container, run `bun run start:http` on the host.
+#   api-relay still reaches host.docker.internal:3100 — no config changes needed.
+
+services:
+  # One data-plane forwarder for every sandbox. Enable with --profile ingress.
+  # Existing nginx keeps TLS/hostnames and forwards to these published ports.
+  ingress-proxy:
+    profiles: [ingress]
+    build:
+      context: ${CARAPA_BOX_SOURCE_DIR:-.}/ingress-proxy
+    image: carapa-box-ingress:latest
+    container_name: carapa-box-ingress
+    restart: unless-stopped
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:${CARAPA_BOX_SECCOMP_DIR:-./security}/seccomp-proxy.json
+      - apparmor=carapabox-proxy
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
+      net.ipv6.conf.all.disable_ipv6: "1"
+    networks:
+      ingress_edge:
+        ipv4_address: ${INGRESS_EDGE_IP:-172.29.255.2}
+    environment:
+      INGRESS_EDGE_IP: ${INGRESS_EDGE_IP:-172.29.255.2}
+      INGRESS_PORT_START: ${INGRESS_PORT_START:-22000}
+      INGRESS_PORT_END: ${INGRESS_PORT_END:-22255}
+    ports:
+      - "${INGRESS_PUBLISH_IP:-0.0.0.0}:${INGRESS_PORT_START:-22000}-${INGRESS_PORT_END:-22255}:${INGRESS_PORT_START:-22000}-${INGRESS_PORT_END:-22255}/tcp"
+    volumes:
+      - type: bind
+        source: ${INGRESS_STATE_HOST_DIR:-${CARAPA_BOX_SOURCE_DIR:-.}/generated/ingress}/runtime
+        target: /app/config
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /run:size=4M,noexec,nosuid,nodev,uid=65532,gid=65532
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+          pids: 50
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+  carapa-box:
+    build:
+      context: ${CARAPA_BOX_SOURCE_DIR:-.}
+      args:
+        # Must match the docker group GID on the host:
+        #   stat -c '%g' /var/run/docker.sock
+        DOCKER_GID: ${DOCKER_GID:-999}
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+    image: carapa-box:latest
+    container_name: carapa-box
+    restart: unless-stopped
+    # Must exceed CARAPA_BOX_SHUTDOWN_DRAIN_MS (default 120 s) plus the 5 s session-close timeout,
+    # so in-flight tool calls can finish before Docker sends SIGKILL.
+    stop_grace_period: 150s
+    # Match private bind-mount ownership and the OAuth refresh-owning relay.
+    user: "${BOX_UID:-1000}:${BOX_GID:-1000}"
+    group_add:
+      - ${DOCKER_GID:-999}
+
+    ports:
+      # Published to host — api-relay reaches this via host.docker.internal:3100
+      # Also used for local CLI clients and healthcheck.
+      # MCP_SANDBOX_PUBLISH_HOST restricts the host interface (e.g. a LAN or
+      # Tailscale IP); 127.0.0.1 is only safe when Board runs on the host network.
+      - "${MCP_SANDBOX_PUBLISH_HOST:-0.0.0.0}:${MCP_SANDBOX_PORT:-3100}:3100"
+
+    volumes:
+      # Docker socket — required for compose stack management (unavoidable)
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      # Project directories — read-only inside the controller
+      # Uses SANDBOX_STACKS_DIR from .env so custom stacks dirs are picked up
+      - ${SANDBOX_STACKS_DIR:-${CARAPA_BOX_SOURCE_DIR:-.}/stacks}:/app/stacks:ro
+      - ${CARAPA_BOX_SOURCE_DIR:-.}/egress-proxy:/app/egress-proxy:ro
+      # Optional operator-only egress Compose project (compose file, .env,
+      # hook, squid files). Unset keeps the checkout's egress-proxy. Mounted
+      # under /app because the controller AppArmor profile reads only there.
+      - ${CARAPA_BOX_EGRESS_DEPLOY_DIR:-/dev/null}:/app/egress-deploy:ro
+      - ${PROVIDER_ACCOUNTS_DIR:-/dev/null}:/app/provider-accounts:rw
+      - ${PROVIDER_RELAY_CLIENTS_DIR:-${CARAPA_BOX_SOURCE_DIR:-.}/egress-proxy/relay-clients}:/app/provider-relay-clients:ro
+      # Seccomp profiles that Compose projects run by the controller reference
+      # through ../security or ../../security; private copies when configured.
+      - ${CARAPA_BOX_SECCOMP_DIR:-${CARAPA_BOX_SOURCE_DIR:-.}/security}:/app/security:ro
+      - ${CARAPA_BOX_SOURCE_DIR:-.}/images:/app/images:ro
+
+      # Config and environment
+      - ${CARAPA_BOX_CONFIG_HOST_DIR:-${CARAPA_BOX_SOURCE_DIR:-.}/config}:/app/config:ro
+      - ${CARAPA_BOX_STATE_HOST_DIR:-${CARAPA_BOX_SOURCE_DIR:-.}/generated}:/app/generated
+      # Set to an operator-private directory before enabling ingress. The
+      # legacy fallback remains unused while ENABLE_INGRESS_PROXY is false.
+      - ${INGRESS_STATE_HOST_DIR:-${CARAPA_BOX_SOURCE_DIR:-.}/generated/ingress}:/app/ingress
+      - ${CARAPA_BOX_ENV_FILE:-./.env}:/app/.env:ro
+
+      # Audit log — bind mount for easy host access
+      - ${CARAPA_BOX_STATE_HOST_DIR:-${CARAPA_BOX_SOURCE_DIR:-.}/generated}/audit:/var/log/carapabox
+
+      # Sandbox IPC tree (host IPC_MOUNT). Box owns it: Board reaches it only
+      # through sandbox_ipc / sandbox_ipc_sync.
+      - ${CARAPA_BOX_IPC_HOST_DIR:-${IPC_MOUNT:-${CARAPA_BOX_SOURCE_DIR:-.}/generated/ipc}}:/app/ipc
+      # Group directories of projects placed on this box (hub mode), served
+      # to Board through group_list/group_read/group_write and replication.
+      - ${CARAPA_BOX_GROUPS_ROOT:-${CARAPA_BOX_SOURCE_DIR:-.}/generated/groups}:/app/groups
+
+      # Nginx Proxy hosts config
+      - ${NGINX_PROXY_DIR:-${CARAPA_BOX_SOURCE_DIR:-.}/generated/nginx-routes}:/app/generated/nginx-routes
+
+    environment:
+      - SECRETS_DIR=/run/secrets
+      - MCP_SANDBOX_PORT=3100
+      # Inside the container Box must listen on all interfaces for the port
+      # publication above. Non-loopback binds require CARAPA_BOX_API_TOKEN.
+      - MCP_SANDBOX_HOST=0.0.0.0
+      - SANDBOX_STACKS_DIR=/app/stacks
+      # Host-side stacks path — used by toHostPath() to rewrite volume mounts
+      # for the Docker daemon, which resolves paths on the host filesystem.
+      - SANDBOX_STACKS_HOST_DIR=${SANDBOX_STACKS_DIR:-${CARAPA_BOX_SOURCE_DIR:-.}/stacks}
+      # Empty unless CARAPA_BOX_EGRESS_DEPLOY_DIR is set; CarapaBox then falls
+      # back to /app/egress-proxy. The code dir stays the checkout either way.
+      - SANDBOX_EGRESS_PROXY_DIR=${CARAPA_BOX_EGRESS_DEPLOY_DIR:+/app/egress-deploy}
+      - SANDBOX_EGRESS_PROXY_CODE_DIR=/app/egress-proxy
+      - PROVIDER_ACCOUNTS_DIR=${PROVIDER_ACCOUNTS_DIR:+/app/provider-accounts}
+      - PROVIDER_ACCOUNTS_HOST_DIR=${PROVIDER_ACCOUNTS_DIR:-}
+      - PROVIDER_RELAY_CLIENTS_DIR=/app/provider-relay-clients
+      # Docker CLI needs a writable config dir; overlay root is read-only
+      - DOCKER_CONFIG=/tmp/.docker
+      # Host path to the project root — used to rewrite STACK_DIR for volume
+      # mounts that the Docker daemon resolves on the host filesystem.
+      - SANDBOX_HOST_DIR=${SANDBOX_HOST_DIR}
+      # Audit log — writable bind mount for persistent logs across restarts
+      - AUDIT_LOG_PATH=/var/log/carapabox/audit.jsonl
+      - ENABLE_NGINX_PROXY=${ENABLE_NGINX_PROXY:-false}
+      - NGINX_PROXY_DIR=/app/generated/nginx-routes
+      - NGINX_PROXY_CONTAINER=${NGINX_PROXY_CONTAINER:-nginx_app}
+      - NGINX_PROXY_DOMAIN=${NGINX_PROXY_DOMAIN:-carapa.box}
+      - NGINX_PROXY_DOMAIN2=${NGINX_PROXY_DOMAIN2:-}
+      - CARAPA_BOX_CONFIG_DIR=/app/config
+      - CARAPA_BOX_STATE_DIR=/app/generated
+      - INGRESS_STATE_DIR=/app/ingress
+      - INGRESS_STATE_HOST_DIR=${INGRESS_STATE_HOST_DIR:-}
+      # Host directory mounted at /app/ipc; defaults to IPC_MOUNT. Empty means
+      # Box cannot see the IPC tree and Board keeps the shared single-host layout.
+      - CARAPA_BOX_IPC_DIR=/app/ipc
+      - CARAPA_BOX_IPC_HOST_DIR=${CARAPA_BOX_IPC_HOST_DIR:-${IPC_MOUNT:-}}
+      - CARAPA_BOX_GROUPS_DIR=${CARAPA_BOX_GROUPS_ROOT:+/app/groups}
+
+    env_file:
+      - .env
+
+    # API credential for Board/MCP; separate admin credential for operator access.
+    # Provision both under SECRETS_DIR before deploying. Only the API credential
+    # should be shared with Board and relay services.
+    secrets:
+      - carapa_box_api_token
+      - carapa_box_admin_token
+
+    # ── Security hardening ───────────────────────────────────────────
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,noexec,nosuid,nodev,uid=${BOX_UID:-1000},gid=${BOX_GID:-1000}
+      - /run:size=16M,noexec,nosuid,nodev,uid=${BOX_UID:-1000},gid=${BOX_GID:-1000}
+      - /app/.bun:size=32M,noexec,nosuid,nodev,uid=${BOX_UID:-1000},gid=${BOX_GID:-1000}
+
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:${CARAPA_BOX_SECCOMP_DIR:-./security}/seccomp-default.json
+      # Uncomment after loading the profile via install-apparmor.sh:
+      - apparmor=carapabox-controller
+
+    cap_drop:
+      - ALL
+
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+          pids: 2000
+
+    logging:
+      driver: ${LOG_DRIVER:-json-file}
+      options:
+        tag: "carapabox"
+        #max-size: "50m"
+        #max-file: "5"
+
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+
+networks:
+  ingress_edge:
+    name: carapa_ingress_edge
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${INGRESS_EDGE_SUBNET:-172.29.255.0/28}
+
+# The API token is shared with authorized API clients such as Board.
+# The separate admin token belongs only to the controller and operator clients.
+secrets:
+  carapa_box_api_token:
+    file: ${SECRETS_DIR}/carapa_box_api_token
+  carapa_box_admin_token:
+    file: ${SECRETS_DIR}/carapa_box_admin_token

@@ -1,0 +1,161 @@
+#!/usr/bin/python3
+"""Read-only, symlink-safe repository discovery below the container workspace.
+
+Protocol: each discovered repository is written as an absolute filesystem path,
+encoded with Python's filesystem encoding, followed by a NUL byte.  There is no
+header and an empty result is an empty stream.  Diagnostics go to stderr.
+"""
+
+import os
+import re
+import stat
+import sys
+
+
+NAME = re.compile(br"(?:[A-Za-z0-9][A-Za-z0-9._-]{0,254}|\.[A-Za-z0-9][A-Za-z0-9._-]{0,253})\Z")
+SPECIAL_EXCLUSIONS = {b"__pycache__"}
+
+
+def fail(message):
+    sys.stderr.write("carapa-repository-scan: " + message + "\n")
+    raise SystemExit(2)
+
+
+def open_verified_directory(parent, name):
+    """Open one directory without trusting this runtime's O_NOFOLLOW behavior.
+
+    The no-follow stat rejects a symlink before opening. Comparing its identity
+    with fstat after opening also rejects a symlink/directory swap in between.
+    Once verified, later replacements cannot redirect the open descriptor.
+    """
+    metadata = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise OSError("path component is not a real directory")
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=parent,
+    )
+    opened = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or opened.st_dev != metadata.st_dev
+        or opened.st_ino != metadata.st_ino
+    ):
+        os.close(descriptor)
+        raise OSError("path component changed or is a symbolic link")
+    return descriptor
+
+
+def configured_boundary():
+    """Return Docker's configured working directory for this invocation.
+
+    sandbox_exec does not supply a working-directory override, so Docker starts
+    this immutable tool in the service's CarapaBox-managed ``working_dir``.
+    Unlike an environment variable or CLI argument, callers cannot substitute
+    this value for one invocation.  ``getcwd`` also fails if that directory has
+    been replaced or removed instead of resolving a replacement path.
+    """
+    try:
+        boundary = os.fsencode(os.getcwd())
+    except OSError as exc:
+        fail("cannot determine configured workspace root: " + str(exc))
+    if not boundary.startswith(b"/"):
+        fail("configured workspace root is not absolute")
+    return boundary
+
+
+def validate_root(value, boundary):
+    root = os.fsencode(value)
+    if not root.startswith(b"/") or b"\0" in root:
+        fail("scan root must be an absolute path")
+    # Reject traversal as supplied, but accept harmless lexical variants such
+    # as a trailing slash or ``/.``. Docker/Compose commonly preserves those
+    # forms in WORKSPACE_PATH even though they identify the same directory.
+    if b".." in root.split(b"/")[1:]:
+        fail("scan root contains a traversal component")
+    root = os.path.normpath(root)
+    raw_components = root.split(b"/")[1:]
+    if not raw_components or any(component in (b"", b".", b"..") for component in raw_components):
+        fail("scan root contains an invalid component")
+    if os.path.commonpath((boundary, root)) != boundary:
+        fail("scan root is outside configured workspace root")
+
+    # Resolve nothing. Verify no-follow metadata against every opened descriptor;
+    # O_NOFOLLOW remains defense in depth, not the security boundary.
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(b"/", flags)
+    for component in raw_components:
+        try:
+            child = open_verified_directory(descriptor, component)
+        except OSError as exc:
+            os.close(descriptor)
+            fail("cannot access scan root: " + str(exc))
+        os.close(descriptor)
+        descriptor = child
+    return root, descriptor
+
+
+def scan(directory, descriptor, depth, max_depth, excluded, output):
+    try:
+        with os.scandir(descriptor) as entries:
+            children = []
+            repository = False
+            for entry in entries:
+                name = os.fsencode(entry.name)
+                if name == b".git":
+                    try:
+                        mode = entry.stat(follow_symlinks=False).st_mode
+                    except OSError:
+                        continue
+                    if stat.S_ISDIR(mode) or stat.S_ISREG(mode):
+                        repository = True
+                elif depth < max_depth and name not in excluded:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            children.append(name)
+                    except OSError:
+                        pass
+
+        if repository:
+            output.write(directory + b"\0")
+            return
+        for name in sorted(children):
+            try:
+                child = open_verified_directory(descriptor, name)
+            except OSError:
+                continue
+            try:
+                scan(os.path.join(directory, name), child, depth + 1, max_depth, excluded, output)
+            finally:
+                os.close(child)
+    except OSError as exc:
+        fail("cannot scan directory: " + str(exc))
+
+
+def main():
+    if len(sys.argv) < 3:
+        fail("usage: carapa-repository-scan ROOT MAX_DEPTH [EXCLUDE ...]")
+    root, root_descriptor = validate_root(sys.argv[1], configured_boundary())
+    try:
+        max_depth = int(sys.argv[2], 10)
+    except ValueError:
+        fail("max depth must be an integer from 1 through 12")
+    if not 1 <= max_depth <= 12 or str(max_depth) != sys.argv[2]:
+        fail("max depth must be an integer from 1 through 12")
+
+    excluded = set()
+    for value in sys.argv[3:]:
+        name = os.fsencode(value)
+        if (not NAME.fullmatch(name) and name not in SPECIAL_EXCLUSIONS) or name in (b".", b"..", b".git"):
+            fail("invalid exclusion name")
+        excluded.add(name)
+
+    try:
+        scan(root, root_descriptor, 0, max_depth, excluded, sys.stdout.buffer)
+    finally:
+        os.close(root_descriptor)
+
+
+if __name__ == "__main__":
+    main()

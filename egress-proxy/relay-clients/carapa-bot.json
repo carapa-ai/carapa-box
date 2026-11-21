@@ -1,0 +1,25 @@
+{
+    "match": [
+        "carapa-*.agent_egress*"
+    ],
+    "services": {
+        "mcp-relay": {
+            "host": "${CARAPA_BOARD_HOST:-host.docker.internal}",
+            "port": "${CARAPA_BOARD_PORT:-3000}",
+            "protocol": "${CARAPA_BOARD_PROTOCOL:-}",
+            "auth": "apikey"
+        },
+        "board-api": {
+            "host": "${CARAPA_BOARD_HOST:-host.docker.internal}",
+            "port": "${CARAPA_BOARD_PORT:-3000}",
+            "protocol": "${CARAPA_BOARD_PROTOCOL:-}",
+            "auth": "apikey"
+        },
+        "carapa-mail": {
+            "host": "carapa-mail-carapamail-1",
+            "port": 3477,
+            "auth": "apikey",
+            "tokenService": "carapa-mail"
+        }
+    }
+}

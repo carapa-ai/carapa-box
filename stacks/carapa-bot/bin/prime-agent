@@ -1,0 +1,33 @@
+#!/bin/sh
+# Keep ACP's background daemon scoped to this container boot. Agent homes are
+# shared across sandboxes, so the default socket also shares recovery records.
+set -eu
+if [ -x /opt/carapa-harness/bin/carapa-harness-exec ] && [ -z "${CARAPA_HARNESS_SNAPSHOT:-}" ]; then
+    exec /opt/carapa-harness/bin/carapa-harness-exec "$0" "$@"
+fi
+
+acp=0
+mode_next=0
+explicit_socket=0
+for argument do
+    if [ "$mode_next" -eq 1 ]; then
+        [ "$argument" != acp ] || acp=1
+        mode_next=0
+    fi
+    case "$argument" in
+        --) break ;;
+        --mode) mode_next=1 ;;
+        --mode=acp) acp=1 ;;
+        --daemon-socket|--daemon-socket=*) explicit_socket=1 ;;
+    esac
+done
+
+if [ "$acp" -eq 1 ] && [ "$explicit_socket" -eq 0 ]; then
+    boot="$(awk '{sub(/^.*\) /, ""); print $20}' /proc/1/stat)"
+    scope="$(printf '%s\n' "$(cat /etc/hostname)" "$boot" "${CARAPA_HARNESS_SNAPSHOT:-legacy}" | sha256sum | cut -c1-16)"
+    socket_dir="/tmp/prime-agent-$(id -u)"
+    (umask 077; mkdir -p "$socket_dir")
+    exec /opt/carapa-harness/bin/prime-agent \
+        --daemon-socket "$socket_dir/carapa-$scope.sock" "$@"
+fi
+exec /opt/carapa-harness/bin/prime-agent "$@"

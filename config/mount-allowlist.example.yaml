@@ -1,0 +1,6 @@
+# Host directories allowed as bind-mount sources.
+# Empty list = deny all (secure default).
+allowed:
+  - /path/to/your/workspace
+  # parent folder containing .claude folder. do not use $HOME! copy the .claude in another location
+  - /path/to/your/.claude 

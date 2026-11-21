@@ -1,0 +1,138 @@
+#include <tunables/global>
+
+# AppArmor profile for CarapaBox web containers
+# Applies to: nginx (×5 stacks), snappymail
+#
+# Purpose: Serve static content and proxy to PHP-FPM. Read-only access
+#          to web root. Write only to logs and snappymail data.
+
+profile carapabox-web flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  # ── Network ──────────────────────────────────────────────────────
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network unix stream,
+  network unix dgram,
+  network netlink raw,
+
+  # ── Capabilities ────────────────────────────────────────────────
+  capability chown,
+  capability setuid,
+  capability setgid,
+  capability fowner,
+  capability dac_override,
+  capability net_bind_service,
+
+  # ── Deny sensitive paths ────────────────────────────────────────
+  deny /etc/shadow rwklx,
+  deny /etc/gshadow rwklx,
+  deny /etc/sudoers rwklx,
+  deny /etc/sudoers.d/** rwklx,
+  deny /proc/*/environ r,
+  deny /proc/sysrq-trigger rwklx,
+  deny /proc/sys/** w,
+  deny /proc/kcore rwklx,
+  deny /proc/kmsg rwklx,
+  deny /sys/** w,
+  deny /root/** rwklx,
+  deny /home/** rwklx,
+  deny /dev/sd* rwklx,
+  deny /dev/nvme* rwklx,
+  deny /dev/xvd* rwklx,
+  deny /dev/vd* rwklx,
+  deny mount,
+
+  # ── Docker entrypoint ─────────────────────────────────────────
+  /docker-entrypoint.sh rix,
+  /docker-entrypoint.d/ r,
+  /docker-entrypoint.d/** rix,
+
+  # ── Nginx config ──────────────────────────────────────────────
+  /etc/nginx/** r,
+  /etc/nginx/conf.d/** rw,        # envsubst creates config from templates
+
+  # ── Web root (read-only serving) ───────────────────────────────
+  /var/www/** r,
+  deny /var/www/** w,
+
+  # ── Logging ────────────────────────────────────────────────────
+  /var/log/nginx/** w,
+  /var/log/** rw,
+
+  # ── Snappymail data (read-write) ───────────────────────────────
+  /var/lib/snappymail/** rw,
+
+  # ── Cache & temp dirs ─────────────────────────────────────────
+  /var/cache/nginx/ rw,
+  /var/cache/nginx/** rw,
+
+  # ── PID & runtime files ────────────────────────────────────────
+  /run/nginx.pid rw,
+  /run/** rw,
+  /tmp/** rw,
+  /var/tmp/** rw,
+
+  # ── System binaries & libraries ────────────────────────────────
+  /usr/** rix,
+  /lib/** rix,
+  /lib64/** rix,
+  /bin/** rix,
+  /sbin/** rix,
+
+  # ── System config (read-only) ──────────────────────────────────
+  /etc/passwd r,
+  /etc/group r,
+  /etc/hosts r,
+  /etc/resolv.conf r,
+  /etc/host.conf r,
+  /etc/nsswitch.conf r,
+  /etc/ssl/** r,
+  /etc/ca-certificates/** r,
+  /etc/ld.so.cache r,
+  /etc/ld.so.conf r,
+  /etc/ld.so.conf.d/** r,
+  /etc/localtime r,
+  /etc/timezone r,
+  /etc/mime.types r,
+
+  # ── Device access ──────────────────────────────────────────────
+  /dev/null rw,
+  /dev/zero r,
+  /dev/full rw,
+  /dev/random r,
+  /dev/urandom r,
+  /dev/tty rw,
+  /dev/pts/* rw,
+  /dev/ptmx rw,
+  /dev/shm/** rw,
+  /dev/fd/** rw,
+
+  # ── Proc (filtered) ───────────────────────────────────────────
+  /proc/ r,
+  /proc/self/** r,
+  /proc/[0-9]*/stat r,
+  /proc/[0-9]*/status r,
+  /proc/[0-9]*/fd/** rw,
+  /proc/[0-9]*/fdinfo/** r,
+  /proc/[0-9]*/net/** r,
+  /proc/[0-9]*/cgroup r,
+  /proc/meminfo r,
+  /proc/cpuinfo r,
+  /proc/filesystems r,
+  /proc/stat r,
+  /proc/loadavg r,
+  /proc/uptime r,
+  /proc/version r,
+  /proc/sys/kernel/hostname r,
+  /proc/sys/kernel/osrelease r,
+  /proc/sys/kernel/ngroups_max r,
+  /proc/sys/net/** r,
+
+  # ── Signal handling ────────────────────────────────────────────
+  signal,
+  ptrace read peer=carapabox-web,
+}

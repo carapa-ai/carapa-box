@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# carapa-delegate - harness-neutral one-shot subagent on the CarapaBox runtime.
+#
+# Resolves a tier (fast|balanced|frontier) through the board's runtime-tiers
+# endpoint, writes a run dir (args.json + prompt.txt), runs
+# run-agent.sh --exec (from this directory) and prints the child's final
+# assistant message. Telemetry comes from the run's metrics.json (same schema for
+# every harness).
+#
+# Usage:
+#   carapa-delegate --tier frontier --prompt-file FILE [--out FILE] [--timeout SEC]
+#                   [--cwd DIR] [--reasoning LEVEL]
+#                   [--project P] [--objective O | --no-objective] [--harness H] [--keep]
+#   carapa-delegate --agent-cmd pi --model llama-proxy/qwen3.8 --prompt-file FILE   (test override)
+#   echo "prompt" | carapa-delegate --tier fast --prompt-file -
+#
+# Stdout: final assistant message. Stderr: one JSON summary line (harness, model,
+# steps, toolCalls, costUsd, durationMs, exitCode, runDir).
+# Exit: child exit code; 2 = usage/resolution error; 3 = privacy refusal (403);
+# 124 = timeout (child stopped).
+#
+# Tier scope (first match wins): --objective/--project flags, DELEGATE_OBJECTIVE /
+# DELEGATE_PROJECT env, the parent run's args.json (found via the session's active_run
+# pointer or CARAPA_AGENT_RUN_ID: groupFolder, objectiveId, agentCmd), then the nearest objective folder above the
+# current directory (obj-*/ with .agent/rules/objective-context.md).
+# With an objective: GET /api/projects/P/objectives/O/runtime-tiers (objective's
+# event harness). Without: GET /api/projects/P/runtime-tiers?harness=H, H = --harness
+# or the parent run's harness.
+#
+# Run dirs: $DELEGATE_RUN_ROOT, else /workspace/group/tmp/delegate (if writable), else
+# ${TMPDIR:-/tmp}/delegate. Deleted after a successful run unless --keep; kept on failure.
+set -euo pipefail
+
+BIN=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -n "${DELEGATE_RUN_ROOT:-}" ]; then RUN_ROOT=$DELEGATE_RUN_ROOT
+elif [ -w /workspace/group ]; then RUN_ROOT=/workspace/group/tmp/delegate
+else RUN_ROOT=${TMPDIR:-/tmp}/delegate; fi
+# Nearest objective folder above the current directory (objective runs start there).
+OBJ_DIR= d=$PWD
+while [ "$d" != / ] && [ -n "$d" ]; do
+  case "$(basename "$d")" in obj-*) [ -f "$d/.agent/rules/objective-context.md" ] && { OBJ_DIR=$d; break; } ;; esac
+  d=$(dirname "$d")
+done
+keep=
+BOARD=${DELEGATE_BOARD_URL:-${BOARD_URL:-http://api-relay:8080/board-api}}
+
+tier= agent_cmd= model= reasoning= prompt_file= out= cwd= timeout_s=900
+project=${DELEGATE_PROJECT:-} objective=${DELEGATE_OBJECTIVE:-} harness= no_objective=
+# Exit 2 (usage/resolution) and 3 (privacy refusal) before the child starts leave no run dir.
+run_dir= cwd_tmp= started=
+cleanup_early() {
+  local rc=$?
+  if [ -z "$started" ] && { [ "$rc" = 2 ] || [ "$rc" = 3 ]; }; then
+    [ -z "$run_dir" ] || rm -rf -- "$run_dir"
+    [ -z "$cwd_tmp" ] || rm -rf -- "$cwd_tmp"
+  fi
+}
+trap cleanup_early EXIT
+die() { echo "carapa-delegate: $*" >&2; exit 2; }
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tier) tier=$2; shift 2 ;;
+    --agent-cmd) agent_cmd=$2; shift 2 ;;
+    --model) model=$2; shift 2 ;;
+    --reasoning) reasoning=$2; shift 2 ;;
+    --prompt-file) prompt_file=$2; shift 2 ;;
+    --out) out=$2; shift 2 ;;
+    --cwd) cwd=$2; shift 2 ;;
+    --timeout) timeout_s=$2; shift 2 ;;
+    --project) project=$2; shift 2 ;;
+    --objective) objective=$2; shift 2 ;;
+    --no-objective) no_objective=1; shift ;;
+    --harness) harness=$2; shift 2 ;;
+    --keep) keep=1; shift ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+[ -n "$prompt_file" ] || die "--prompt-file is required"
+[ -n "$tier" ] || [ -n "$agent_cmd" ] || die "--tier or --agent-cmd is required"
+[ -x "$BIN/run-agent.sh" ] || die "$BIN/run-agent.sh not found"
+
+mkdir -p "$RUN_ROOT"
+run_dir=$(mktemp -d "$RUN_ROOT/dlg-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
+if [ "$prompt_file" = "-" ]; then cat > "$run_dir/prompt.txt"; else cp -- "$prompt_file" "$run_dir/prompt.txt"; fi
+[ -s "$run_dir/prompt.txt" ] || die "empty prompt"
+# Default cwd: a fresh dir outside /workspace, so the child does not load the parent's
+# CLAUDE.md / AGENTS.md / .agent rules (harnesses walk up from their cwd).
+[ -n "$cwd" ] || { cwd=$(mktemp -d "${TMPDIR:-/tmp}/delegate-cwd.XXXXXX"); cwd_tmp=$cwd; }
+
+env_json='{}' pricing='null' fb_model='' fb_reasoning=''
+if [ -n "$tier" ] && [ -z "$agent_cmd" ]; then
+  case "$tier" in fast|balanced|frontier) ;; *) die "tier must be fast|balanced|frontier" ;; esac
+  [ -n "${CARAPA_BOARD_API_TOKEN:-}" ] || die "CARAPA_BOARD_API_TOKEN not set"
+  # Scope: parent run args, then the objective folder this script lives in.
+  # Persistent sessions keep one process across turns, so CARAPA_AGENT_RUN_ID can name
+  # an old run; the runtime's active_run pointer names the current one.
+  parent_args=
+  if [ -n "${CARAPA_BROWSER_CONTEXT_FILE:-}" ] && [ -s "$CARAPA_BROWSER_CONTEXT_FILE" ]; then
+    cand=$(head -1 "$CARAPA_BROWSER_CONTEXT_FILE")
+    [ -f "$cand/args.json" ] && parent_args="$cand/args.json"
+  fi
+  if [ -z "$parent_args" ] && [ -n "${CARAPA_AGENT_RUN_ID:-}" ]; then
+    for base in /workspace/ipc/runs /workspace/ipc/brain-runs/runs; do
+      [ -f "$base/${CARAPA_AGENT_RUN_ID%_}/args.json" ] && { parent_args="$base/${CARAPA_AGENT_RUN_ID%_}/args.json"; break; }
+    done
+  fi
+  pa() { [ -n "$parent_args" ] && jq -r --arg k "$1" '.[$k] // "" | strings' "$parent_args" 2>/dev/null || true; }
+  [ -n "$project" ] || project=$(pa groupFolder)
+  [ -n "$objective" ] || objective=$(pa objectiveId)
+  [ -n "$harness" ] || harness=$(pa agentCmd)
+  if [ -n "$OBJ_DIR" ]; then
+    [ -n "$objective" ] || objective=$(basename "$OBJ_DIR")
+    [ -n "$project" ] || project=$(sed -n 's/.*\*\*Project ID\*\*: `\([^`]*\)`.*/\1/p' "$OBJ_DIR/.agent/rules/objective-context.md" 2>/dev/null | head -1)
+  fi
+  [ -n "$no_objective" ] && objective=
+  [ -n "$project" ] || die "no project scope: pass --project (no parent run args or objective folder found)"
+  for v in "$project" "$objective" "$harness"; do
+    [ -z "$v" ] || { [[ $v =~ ^[A-Za-z0-9._-]+$ ]] && [[ $v != *..* ]]; } || die "invalid id: $v"
+  done
+  if [ -n "$objective" ]; then
+    url="$BOARD/api/projects/$project/objectives/$objective/runtime-tiers"
+  else
+    url="$BOARD/api/projects/$project/runtime-tiers${harness:+?harness=$harness}"
+  fi
+  code=$(printf 'Authorization: Bearer %s\n' "$CARAPA_BOARD_API_TOKEN" |
+    curl -sS -m 20 -o "$run_dir/tiers.json" -w '%{http_code}' -H @- "$url") || die "runtime-tiers request failed"
+  # Before the board route exists, the unmatched path falls through to the global
+  # device-signature gate (401 "Fresh signature required") or a plain 404.
+  if [ -z "$objective" ] && { [ "$code" = 404 ] || { [ "$code" = 401 ] && grep -q 'Fresh signature' "$run_dir/tiers.json"; }; }; then
+    die "board has no project-level runtime-tiers route (older board); pass --objective or --agent-cmd/--model"
+  fi
+  [ "$code" = 403 ] && { echo "carapa-delegate: privacy refusal: $(cat "$run_dir/tiers.json")" >&2; exit 3; }
+  [ "$code" = 200 ] || die "runtime-tiers HTTP $code: $(head -c 300 "$run_dir/tiers.json")"
+  c=$(jq -c --arg t "$tier" '.tiers[$t] // empty' "$run_dir/tiers.json")
+  [ -n "$c" ] || die "tier $tier unavailable: $(jq -c --arg t "$tier" '.unavailableTiers[$t]? // .unavailableTiers' "$run_dir/tiers.json")"
+  agent_cmd=$(jq -r '.agent_executable // (.agent_cmd | split(":")[0])' <<<"$c")
+  model=$(jq -r '.agent_model' <<<"$c")
+  reasoning=${reasoning:-$(jq -r '.reasoning_effort // ""' <<<"$c")}
+  fb_model=$(jq -r '.fallback_model // ""' <<<"$c")
+  fb_reasoning=$(jq -r '.fallback_reasoning_effort // ""' <<<"$c")
+  env_json=$(jq -c '.agent_env // {}' <<<"$c")
+  pricing=$(jq -c '.pricing // null' "$run_dir/tiers.json")
+fi
+[ -n "$model" ] || die "--model is required with --agent-cmd"
+
+jq -n --arg a "$agent_cmd" --arg m "$model" --arg r "${reasoning:-}" --arg fm "$fb_model" --arg fr "$fb_reasoning" \
+  --arg w "$cwd" --arg g "${DELEGATE_GROUP_DIR:-/workspace/group}" --argjson e "$env_json" --argjson p "$pricing" '
+  {agentCmd:$a, model:$m, reasoningEffort:$r, fallbackModel:$fm, fallbackReasoningEffort:$fr,
+   workDir:$w, groupDir:$g, env:$e, metricsContract:1, taskId:"", objectiveId:"", sessionId:"",
+   agent:"", bare:"", chatMode:"", promptCacheTtl:"", forkSession:"", conversationKey:"",
+   persistent:"", conversationId:""} + (if $p == null then {} else {pricing:$p} end)' > "$run_dir/args.json"
+
+started=1
+rc=0
+timeout "$timeout_s" "$BIN/run-agent.sh" --exec "$run_dir" >"$run_dir/exec.log" 2>&1 || rc=$?
+if [ "$rc" = 124 ]; then "$BIN/stop-agent.sh" "$run_dir" >>"$run_dir/exec.log" 2>&1 || true; fi
+if [ "$rc" != 124 ] && [ -f "$run_dir/exit_code" ]; then rc=$(tr -dc '0-9' < "$run_dir/exit_code"); fi
+[[ $rc =~ ^[0-9]+$ ]] || rc=1
+
+answer=$(jq -Rrs '[split("\n")[] | fromjson? | select(.type=="message" and .role=="assistant" and (.content|type)=="string")] | last | .content // ""' \
+  "$run_dir/output.v1.jsonl" 2>/dev/null || true)
+if [ -n "$out" ]; then printf '%s\n' "$answer" > "$out"; else printf '%s\n' "$answer"; fi
+
+jq -c --arg d "$run_dir" --argjson rc "$rc" '{harness, model, steps, toolCalls:(.toolCalls|length? // null),
+  costUsd, durationMs, exitCode:$rc, runDir:$d}' "$run_dir/metrics.json" 2>/dev/null > "$run_dir/summary.json" \
+  || echo "{\"exitCode\":$rc,\"runDir\":\"$run_dir\",\"metrics\":null}" > "$run_dir/summary.json"
+cat "$run_dir/summary.json" >&2
+if [ "$rc" = 0 ] && [ -z "$keep" ]; then rm -rf -- "$run_dir"; fi
+case "$cwd" in "${TMPDIR:-/tmp}"/delegate-cwd.*) rm -rf -- "$cwd" ;; esac
+exit "$rc"

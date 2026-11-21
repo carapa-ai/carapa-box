@@ -1,0 +1,386 @@
+#!/usr/bin/env node
+'use strict';
+// Controller-owned adapter. Only a Board browser context ID is accepted; there is no URL,
+// command, registry path, or CDP endpoint supplied by the remote viewer.
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const { createRequire } = require('node:module');
+const { randomUUID } = require('node:crypto');
+const { PLAYWRIGHT_VERSION, realCli, readBrowser } = require('./browser-session.cjs');
+const { tmpDir } = require('./browser-host.cjs');
+const { selectMenuBootstrap } = require('./browser-select-menu.cjs');
+const { audioStatus, captureAudio } = require('./browser-audio.cjs');
+const { command: tabCommand, readSelection } = require('./browser-tabs.cjs');
+const { connectSocket, dashboardSocketPath, listeningOnSocket } = require('./browser-viewer-socket.cjs');
+
+const MAX_FRAME = 4 * 1024 * 1024;
+const MAX_INPUT = 64 * 1024;
+const METHODS = new Set(['setVisible', 'selectTab', 'newTab', 'closeTab', 'navigate',
+  'back', 'forward', 'reload', 'mousemove', 'mousedown', 'mouseup', 'wheel',
+  'keydown', 'keyup', 'screenshot', 'resize', 'setAudio']);
+let child;
+let socket;
+let stopped = false;
+let socketDir;
+let timer;
+let startupTimer;
+let internalRequestId = -2;
+const internalRequests = new Map();
+let screencastSizeFile;
+let stopCapture;
+let audioEnabled = false;
+let visible = true;
+let tabs = [];
+let tabOperations = Promise.resolve();
+let following = false;
+// Set when the dashboard listens on a Unix socket instead of loopback TCP (native runner sandbox).
+let dashboardSocket;
+let playwrightRequire;
+
+async function followSelection(env) {
+  let selected = readSelection(env);
+  if (!selected?.page) return;
+  // Wait for a newly-created page to reach the dashboard before acknowledging
+  // its creation. A navigation sent immediately afterwards must use that page.
+  let tab;
+  for (let attempt = 0; attempt < 100 && !stopped; attempt++) {
+    selected = readSelection(env);
+    if (!selected?.page) return;
+    tab = tabs.find(tab => tab.page === selected.page);
+    if (tab) break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  if (!tab) throw new Error('Selected browser tab is unavailable');
+  if (!tab.selected) await sendInternal('selectTab', tab);
+}
+function scheduleFollow(env) {
+  if (following || !tabs.length || stopped) return;
+  following = true;
+  tabOperations = tabOperations.then(async () => {
+    if (!readSelection(env)) throw new Error('Restart browser to enable shared tab selection');
+    await followSelection(env);
+  }).catch(error => {
+    emit({ type: 'error', error: `Could not synchronize browser tabs: ${error.message}` });
+    stop();
+  }).finally(() => { following = false; });
+}
+function changeTab(message, env, cwd) {
+  tabOperations = tabOperations.then(async () => {
+    const target = tabs.find(tab => tab.browser === message.params?.browser &&
+      tab.context === message.params?.context &&
+      (message.method === 'newTab' || tab.page === message.params?.page));
+    if (!target) throw new Error('Browser tab is no longer available');
+    if (message.method === 'newTab') {
+      await tabCommand(env, cwd, 'tab-new');
+    } else {
+      const selection = readSelection(env);
+      if (!selection) throw new Error('Restart browser to enable shared tab selection');
+      const index = selection.pages.indexOf(target.page);
+      if (index < 0) throw new Error('Browser tab is no longer available');
+      await tabCommand(env, cwd, message.method === 'selectTab' ? 'tab-select' : 'tab-close', String(index));
+    }
+    await followSelection(env);
+    emit({ type: 'message', data: JSON.stringify({ id: message.id, result: null }) });
+  }).catch(error => {
+    emit({ type: 'message', data: JSON.stringify({ id: message.id, error: error.message }) });
+  });
+}
+
+function emit(value) {
+  if (stopped) return;
+  const line = JSON.stringify(value) + '\n';
+  if (Buffer.byteLength(line) > MAX_FRAME || process.stdout.writableLength > MAX_FRAME) {
+    stop();
+    return;
+  }
+  process.stdout.write(line);
+}
+function stop() {
+  if (stopped) return;
+  stopped = true;
+  clearInterval(timer);
+  clearTimeout(startupTimer);
+  stopCapture?.();
+  stopCapture = undefined;
+  socket?.close();
+  const cleanFiles = () => { if (socketDir) fs.rmSync(socketDir, { recursive: true, force: true }); };
+  if (child?.pid) {
+    try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already exited */ }
+    if (child.exitCode !== null || child.signalCode !== null) cleanFiles();
+    else child.once('exit', cleanFiles);
+    const pid = child.pid;
+    setTimeout(() => {
+      // This group contains only our viewer server, never the agent browser.
+      if (child.exitCode === null && child.signalCode === null) try { process.kill(-pid, 'SIGKILL'); } catch { /* exited */ }
+    }, 1000).unref();
+  } else cleanFiles();
+  process.stdin.destroy();
+}
+
+function updateAudio(env) {
+  stopCapture?.();
+  stopCapture = undefined;
+  if (!audioEnabled || !visible || stopped) return;
+  stopCapture = captureAudio(env, params => {
+    emit({ type: 'message', data: JSON.stringify({ method: 'audio', params }) });
+  }, error => {
+    audioEnabled = false;
+    emit({ type: 'message', data: JSON.stringify({ method: 'audioStatus', params: { available: false, error } }) });
+  });
+}
+
+function runBrowserCode(env, cwd, code, operation) {
+  return new Promise((resolve, reject) => {
+    const cli = realCli();
+    const childProcess = spawn(process.execPath, [cli, 'run-code', code], {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const timeout = setTimeout(() => {
+      childProcess.kill('SIGTERM');
+      reject(new Error(`${operation} timed out`));
+    }, 15_000);
+    childProcess.stdout.setEncoding('utf8');
+    childProcess.stderr.setEncoding('utf8');
+    childProcess.stdout.on('data', data => { stdout += data; });
+    childProcess.stderr.on('data', data => { stderr += data; });
+    childProcess.on('error', error => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    childProcess.on('close', status => {
+      clearTimeout(timeout);
+      if (status !== 0 || stdout.includes('### Error')) {
+        reject(new Error(stderr.trim() || `${operation} failed`));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function resizeBrowser(env, cwd, width, height) {
+  return runBrowserCode(env, cwd,
+    `async page => { await page.setViewportSize({ width: ${width}, height: ${height} }); }`,
+    'Browser resize');
+}
+
+process.on('SIGTERM', stop);
+process.on('SIGINT', stop);
+process.stdin.on('end', stop);
+process.stdin.on('error', stop);
+process.stdout.on('error', stop);
+
+async function main() {
+  const runId = process.argv[2];
+  if (process.argv.length !== 3) throw new Error('Usage: browser-viewer <contextId>');
+  const { env, cwd, runDir, file } = readBrowser(runId);
+  const ended = () => file ? !fs.existsSync(file) || !fs.existsSync(cwd) : !fs.existsSync(runDir) || fs.existsSync(path.join(runDir, 'exit_code'));
+  if (ended()) throw new Error('Browser context has ended');
+  const cli = realCli();
+  // A transport adapter can live outside the selected Playwright package.
+  const requireCli = playwrightRequire = createRequire(process.env.CARAPA_PLAYWRIGHT_PACKAGE
+    ? path.join(process.env.CARAPA_PLAYWRIGHT_PACKAGE, 'playwright-cli.js') : cli);
+  const version = requireCli('playwright-core/package.json').version;
+  if (version !== PLAYWRIGHT_VERSION) throw new Error(`Unsupported Playwright viewer version ${version}; expected ${PLAYWRIGHT_VERSION}`);
+  // Keep the browser registry context-scoped, but give this viewer its own server
+  // singleton. Several users can attach without sharing server ownership.
+  socketDir = tmpDir('pwv-' + randomUUID().slice(0, 16));
+  fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+  screencastSizeFile = path.join(socketDir, 'screencast-size.json');
+  const preload = path.join(__dirname, 'browser-screencast.cjs');
+  const nodeOptions = [env.NODE_OPTIONS, `--require=${preload}`].filter(Boolean).join(' ');
+  const viewerEnv = { ...env, TMPDIR: socketDir, PWTEST_SOCKETS_DIR: socketDir, PLAYWRIGHT_SOCKETS_DIR: socketDir,
+    CARAPA_BROWSER_VIEWER_SIZE_FILE: screencastSizeFile, NODE_OPTIONS: nodeOptions };
+  dashboardSocket = dashboardSocketPath(socketDir);
+  if (dashboardSocket) viewerEnv.CARAPA_BROWSER_VIEWER_SOCKET = dashboardSocket;
+  else delete viewerEnv.CARAPA_BROWSER_VIEWER_SOCKET;
+  delete viewerEnv.CARAPA_RECORD;
+  child = spawn(process.execPath, [cli, 'show', '--port=0', '--host=127.0.0.1'], {
+    cwd, env: viewerEnv, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  child.on('error', () => { emit({ type: 'error', error: 'Viewer failed to start' }); stop(); });
+  child.on('exit', () => { emit({ type: 'ended' }); stop(); });
+  // Never forward arbitrary package diagnostics or credentials to the viewer.
+  child.stderr.resume();
+  let startup = '';
+  let connecting = false;
+  child.stdout.on('data', data => {
+    if (connecting || stopped) return;
+    startup += data.toString();
+    const base = dashboardSocket ? (listeningOnSocket(startup, dashboardSocket) ? dashboardSocket : undefined)
+      : startup.match(/Listening on (http:\/\/127\.0\.0\.1:\d+)\b/)?.[1];
+    if (startup.length > MAX_INPUT) { emit({ type: 'error', error: 'Invalid viewer startup response' }); stop(); return; }
+    if (base) {
+      connecting = true;
+      void connect(base, version, env, cwd).catch(() => {
+        emit({ type: 'error', error: 'Could not connect to the browser viewer' }); stop();
+      });
+    }
+  });
+  startupTimer = setTimeout(() => { emit({ type: 'error', error: 'Viewer startup timed out' }); stop(); }, 20_000);
+  timer = setInterval(() => {
+    if (ended()) {
+      emit({ type: 'ended' }); stop();
+    } else scheduleFollow(env);
+  }, 1000);
+  let buffer = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => {
+    buffer += chunk;
+    if (Buffer.byteLength(buffer) > MAX_INPUT) { stop(); return; }
+    let newline;
+    while ((newline = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      let message;
+      try { message = JSON.parse(line); } catch { stop(); return; }
+      if ((!message || !Number.isSafeInteger(message.id) || message.id < 0) || !METHODS.has(message.method)) {
+        emit({ type: 'message', data: JSON.stringify({ id: message?.id, error: 'This action is managed by CarapaBoard' }) });
+        continue;
+      }
+      if (!socket || socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_FRAME) { stop(); return; }
+      if (['selectTab', 'newTab', 'closeTab'].includes(message.method)) {
+        changeTab(message, env, cwd);
+        continue;
+      }
+      if (message.method === 'setAudio') {
+        try {
+          if (typeof message.params?.enabled !== 'boolean') throw new Error('Invalid sound setting');
+          audioEnabled = message.params.enabled;
+          updateAudio(env);
+          emit({ type: 'message', data: JSON.stringify({ id: message.id, result: null }) });
+        } catch (error) {
+          audioEnabled = false;
+          emit({ type: 'message', data: JSON.stringify({ id: message.id, error: error.message }) });
+        }
+        continue;
+      }
+      if (message.method === 'setVisible' && typeof message.params?.visible === 'boolean') {
+        visible = message.params.visible;
+        try { updateAudio(env); } catch {
+          audioEnabled = false;
+          emit({ type: 'message', data: JSON.stringify({ method: 'audioStatus', params: { available: false, error: 'Browser sound is unavailable.' } }) });
+        }
+      }
+      if (message.method === 'resize') {
+        const width = message.params?.width;
+        const height = message.params?.height;
+        if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 10_000 || height > 10_000) {
+          socket.send(JSON.stringify({ id: message.id, error: 'Invalid viewport size' }));
+          continue;
+        }
+        void resizeBrowser(env, cwd, width, height).then(async () => {
+          if (!socket || socket.readyState !== WebSocket.OPEN) return;
+          fs.writeFileSync(screencastSizeFile, JSON.stringify({ width, height }), { mode: 0o600 });
+          // The prebuilt dashboard has no resize RPC, so toggle its existing
+          // screencast control to restart it with the new native resolution.
+          await sendInternal('setVisible', { visible: false });
+          await sendInternal('setVisible', { visible: true });
+          socket.send(JSON.stringify({ id: message.id, result: null }));
+        }).catch(error => {
+          if (socket?.readyState === WebSocket.OPEN)
+            socket.send(JSON.stringify({ id: message.id, error: error instanceof Error ? error.message : 'Browser resize failed' }));
+        });
+        continue;
+      }
+      void tabOperations.then(() => {
+        if (socket?.readyState === WebSocket.OPEN) socket.send(line);
+      });
+    }
+  });
+}
+
+function sendInternal(method, params) {
+  if (!socket || socket.readyState !== WebSocket.OPEN)
+    return Promise.reject(new Error('Viewer connection closed'));
+  const id = internalRequestId--;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      internalRequests.delete(id);
+      reject(new Error('Browser viewer action timed out'));
+    }, 10_000);
+    internalRequests.set(id, {
+      resolve: value => { clearTimeout(timeout); resolve(value); },
+      reject: error => { clearTimeout(timeout); reject(error); },
+    });
+    socket.send(JSON.stringify({ id, method, params }));
+  });
+}
+
+async function connect(base, version, env, cwd) {
+  // Discover only the websocket generated by our loopback dashboard. Redirects
+  // are inspected, never followed to an arbitrary destination.
+  if (dashboardSocket) {
+    const unixSocket = await connectSocket(dashboardSocket, playwrightRequire);
+    if (stopped) { unixSocket.close(); return; }
+    socket = unixSocket;
+  } else {
+    const response = await fetch(base + '/', { redirect: 'manual', signal: AbortSignal.timeout(5000) });
+    // The dashboard serves everything, its websocket included, under a random
+    // path prefix that only the root redirect reveals: `/` -> `./<prefix>/`.
+    const location = new URL(response.headers.get('location') || '', base + '/');
+    const prefix = location.pathname.match(/^\/([A-Za-z0-9-]+)\/$/)?.[1];
+    if (location.origin !== base || !prefix) throw new Error('Invalid viewer websocket');
+    if (stopped) return;
+    socket = new WebSocket(base.replace('http:', 'ws:') + '/' + prefix + '/ws');
+  }
+  socket.addEventListener('open', () => {
+    clearTimeout(startupTimer);
+    emit({ type: 'ready', version });
+    emit({ type: 'message', data: JSON.stringify({ method: 'audioStatus', params: audioStatus(env) }) });
+  });
+  let selectMenusReady;
+  socket.addEventListener('message', async event => {
+    if (typeof event.data !== 'string' || Buffer.byteLength(event.data) > MAX_FRAME) { stop(); return; }
+    let message;
+    try { message = JSON.parse(event.data); } catch { stop(); return; }
+    if (Number.isInteger(message.id) && message.id < 0) {
+      const request = internalRequests.get(message.id);
+      if (request) {
+        internalRequests.delete(message.id);
+        if (message.error) request.reject(new Error(String(message.error)));
+        else request.resolve(message.result);
+      }
+      return;
+    }
+    if (message.method === 'tabs') tabs = message.params?.tabs || [];
+    if (message.method === 'tabs' && tabs.length) {
+      // Do not expose interactive tabs until their native selects can be seen.
+      // The context init script also covers navigation and newly opened tabs.
+      selectMenusReady ||= runBrowserCode(env, cwd, selectMenuBootstrap(), 'Browser dropdown setup');
+      try { await selectMenusReady; } catch {
+        emit({ type: 'error', error: 'Browser dropdown setup failed' });
+        stop();
+        return;
+      }
+      if (stopped) return;
+    }
+    if (message.method === 'tabs') scheduleFollow(env);
+    if (message.method === 'sessions') {
+      message.params.sessions = message.params.sessions.map(session => ({
+        title: session.title, workspaceDir: session.workspaceDir,
+        browser: { guid: session.browser.guid, browserName: session.browser.browserName,
+          launchOptions: { channel: session.browser.launchOptions?.channel } },
+      }));
+    }
+    emit({ type: 'message', data: JSON.stringify(message) });
+  });
+  socket.addEventListener('close', () => {
+    for (const request of internalRequests.values()) request.reject(new Error('Viewer connection closed'));
+    internalRequests.clear();
+    emit({ type: 'ended' });
+    stop();
+  });
+  socket.addEventListener('error', () => {
+    for (const request of internalRequests.values()) request.reject(new Error('Viewer connection failed'));
+    internalRequests.clear();
+    emit({ type: 'error', error: 'Viewer connection failed' });
+    stop();
+  });
+}
+main().catch(error => { emit({ type: 'error', error: error.message }); stop(); process.exitCode = 1; });

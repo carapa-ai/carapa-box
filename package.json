@@ -1,0 +1,87 @@
+{
+    "name": "carapa-box",
+    "version": "0.1.0",
+    "license": "PolyForm-Noncommercial-1.0.0",
+    "description": "Secure sandbox environment for AI agents managed via CLI or MCP",
+    "type": "module",
+    "main": "dist/index.js",
+    "scripts": {
+        "plugin:build": "python3 scripts/package-plugin.py",
+        "plugin:test": "bash scripts/test-plugin.sh",
+        "plugin:test:docker": "bun run scripts/plugin-tests/docker.mjs",
+        "lint": "tsc --noEmit",
+        "dev": "bun run --watch src/index.ts",
+        "dev:http": "bun run --watch src/index.ts --http",
+        "test:docker": "bun run src/test-docker.ts",
+        "test:unit": "bun test src/security.test.ts",
+        "test:ingress": "bun test src/ingress.test.ts src/app-publications.test.ts src/compose/ingress.test.ts src/sandbox-ssh.test.ts src/nginx-proxy.test.ts && node --test ingress-proxy/proxy.test.mjs",
+        "test:ingress:docker": "node scripts/test-ingress-docker.mjs",
+        "test:ingress:compose": "bun run scripts/test-ingress-compose.ts",
+        "test:coverage": "bun test --coverage",
+        "test:coverage:unit": "bun test --coverage src/security.test.ts",
+        "test:worktree": "bun run src/test-worktree.ts",
+        "typecheck": "NODE_OPTIONS='--max-old-space-size=6144' tsc -p tsconfig.check.json && tsc -p stacks/carapa-bot/bin/runtime/tsconfig.json",
+        "verify:changed": "bash scripts/verify-changed.sh",
+        "test:carapa-bot-runtime": "bun test stacks/carapa-bot/bin/runtime",
+        "bundle": "bun build ./src/index.ts --outfile ./dist/index.js --target node --bundle && bun build ./src/cli.ts --outfile ./dist/cli.js --target node --bundle",
+        "start": "bun run src/index.ts",
+        "start:http": "bun run src/index.ts --http",
+        "os-runner": "sh scripts/os-runner.sh",
+        "os-runner:no-update": "bun run src/os-runner/main.ts",
+        "runner": "sh scripts/os-runner.sh",
+        "runner:no-update": "bun run src/os-runner/main.ts",
+        "call": "bun run dist/cli.js",
+        "build": "bun run dist/cli.js build",
+        "policy:compile": "bash scripts/compile-policies.sh",
+        "policy:test": "opa test config/policies/ stacks/*/policy.rego stacks/*/policy_test.rego egress-proxy/policy.rego -v"
+    },
+    "keywords": [
+        "mcp",
+        "docker",
+        "sandbox",
+        "ai-agent",
+        "model-context-protocol",
+        "docker-compose",
+        "container-orchestration",
+        "opa",
+        "llm-tools"
+    ],
+    "author": "Regun Software SRL",
+    "homepage": "https://box.carapa.ai",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/carapa-ai/carapa-box"
+    },
+    "bugs": {
+        "url": "https://github.com/carapa-ai/carapa-box/issues"
+    },
+    "devDependencies": {
+        "@playwright/cli": "0.1.24",
+        "@types/bun": "^1.3.8",
+        "@types/node": "^22.0.0",
+        "mcporter": "^0.7.3",
+        "pino-pretty": "^13.1.3",
+        "typescript": "^7.0"
+    },
+    "dependencies": {
+        "@anthropic-ai/sandbox-runtime": "0.0.81",
+        "@modelcontextprotocol/sdk": "^1.32.2",
+        "@open-policy-agent/opa-wasm": "^1.10.0",
+        "pino": "^10.3.1",
+        "yaml": "^2.9.1",
+        "zod": "^4.6.7"
+    },
+    "overrides": {
+        "fast-uri": "^3.1.9",
+        "hono": "^4.13.11",
+        "ip-address": "^10.7.4",
+        "@hono/node-server": "^1.19.15",
+        "ajv": "^8.18.0",
+        "body-parser": "^2.4.0",
+        "qs": "^6.16.0",
+        "express-rate-limit": ">=8.2.2",
+        "path-to-regexp": "^8.4.0",
+        "proxy-addr": "^2.0.8",
+        "zod": "^4.6.7"
+    }
+}

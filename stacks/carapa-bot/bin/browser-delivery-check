@@ -1,0 +1,25 @@
+#!/usr/bin/env node
+'use strict';
+// Fixed verification entrypoints for this delivery; no caller-supplied command.
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const project = JSON.parse(fs.readFileSync('package.json', 'utf8')).name;
+const mode = process.argv[2];
+if (mode === 'runtime' && ['carapa-board', 'carapa-box'].includes(project)) {
+  const result = spawnSync('bun', ['test', __dirname + '/runtime/protocol/runtime.test.ts', __dirname + '/runtime/codex-app-server/main.test.ts'], {stdio:['ignore',1,1],env:{...process.env,LOG_LEVEL:'silent'}});
+  process.exit(result.status ?? 1);
+}
+const commands = project === 'carapa-board' ? {
+  verify: ['bun', 'run', 'verify:changed'],
+  transport: ['bun', 'test', 'src/lib/browser-viewer.test.ts', 'src/lib/browser-session-access.test.ts'],
+  lifecycle: ['bun', 'test', 'src/sandbox/sandbox-process.test.ts'],
+  browser: ['bash', 'scripts/test-browser.sh', 'ui/src/components/chat/browser-tab.browser.test.ts'],
+  publishing: ['bash', 'scripts/test-browser.sh', 'ui/src/components/layout/project-settings-dialog.browser.test.ts'],
+} : project === 'carapa-box' ? {
+  verify: ['bun', 'run', 'typecheck'],
+  transport: ['bun', 'test', 'src/http/browser.test.ts'],
+} : {};
+if (process.argv.length !== 3 || !commands[mode]) throw new Error('Unsupported project or browser verification mode');
+const result = spawnSync(commands[mode][0], commands[mode].slice(1), { stdio: ['ignore', 1, 1], env: { ...process.env, LOG_LEVEL: 'silent' } });
+console.log(JSON.stringify({status: result.status, signal: result.signal, error: result.error?.message}));
+process.exitCode = result.status ?? 1;

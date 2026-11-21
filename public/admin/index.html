@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="CarapaBox Admin Dashboard - Manage isolated Docker-based AI agent sandbox environments">
+    <meta property="og:title" content="CarapaBox Admin Dashboard">
+    <meta property="og:description" content="Manage isolated Docker-based AI agent sandbox environments">
+    <meta property="og:type" content="website">
+    <link rel="canonical" href="/admin/index.html">
+    <title>CarapaBox | Admin Dashboard</title>
+    <link rel="stylesheet" href="admin.css">
+</head>
+
+<body class="dark-mode">
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                <img src="/favicon.ico" class="logo-icon" alt="CarapaBox Logo">
+                <div class="logo-text">
+                    <h1>CarapaBox</h1>
+                    <span>Secure Sandbox</span>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <a href="#dashboard" class="nav-item active" data-tab="dashboard">
+                    <svg class="nav-icon" viewBox="0 0 24 24">
+                        <path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z" />
+                    </svg>
+                    Dashboard
+                </a>
+                <a href="#stacks" class="nav-item" data-tab="stacks">
+                    <svg class="nav-icon" viewBox="0 0 24 24">
+                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+                    </svg>
+                    Stacks
+                </a>
+                <a href="#logs" class="nav-item" data-tab="logs">
+                    <svg class="nav-icon" viewBox="0 0 24 24">
+                        <path
+                            d="M13 3H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V9l-7-7zm0 1.5L18.5 11H13V4.5zM6 20V5h6v7h7v8H6z" />
+                    </svg>
+                    Audit Logs
+                </a>
+                <a href="#settings" class="nav-item" data-tab="settings">
+                    <svg class="nav-icon" viewBox="0 0 24 24">
+                        <path
+                            d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.488.488 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+                    </svg>
+                    Settings
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <a href="#" class="nav-item" id="logout-btn"
+                    style="margin-bottom: 12px; border: 1px solid var(--panel-border);">
+                    <svg class="nav-icon" viewBox="0 0 24 24">
+                        <path
+                            d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z" />
+                    </svg>
+                    Logout
+                </a>
+                <div id="auth-status" class="status-badge">
+                    <span class="status-dot green"></span>
+                    Authenticated
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="content-area">
+            <header class="content-header">
+                <h2 id="view-title">Dashboard</h2>
+                <div class="header-actions">
+                    <div class="uptime">Uptime: <span id="uptime-val">0s</span></div>
+                    <button id="refresh-btn" class="icon-button" title="Refresh Data">
+                        <svg viewBox="0 0 24 24">
+                            <path
+                                d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0020 12c0-4.42-3.58-8-8-8zm-6 8c0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 004 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3c-3.31 0-6-2.69-6-6z" />
+                        </svg>
+                    </button>
+                </div>
+            </header>
+
+            <div id="dashboard-view" class="tab-view active">
+                <div class="stats-grid">
+                    <div class="stat-card glass-panel">
+                        <div class="stat-label">Active Sandboxes</div>
+                        <div class="stat-value" id="active-sandboxes-count">0</div>
+                        <div class="stat-sub">Across all stacks</div>
+                    </div>
+                    <div class="stat-card glass-panel">
+                        <div class="stat-label">Egress Proxy</div>
+                        <div class="stat-value text-cyan" id="egress-status">Checking...</div>
+                        <div class="stat-sub">Network Isolation</div>
+                    </div>
+                    <div class="stat-card glass-panel">
+                        <div class="stat-label">Auth Mode</div>
+                        <div class="stat-value text-purple" id="auth-mode">Token</div>
+                        <div class="stat-sub">Secure Backend</div>
+                    </div>
+                </div>
+
+                <section class="section">
+                    <div class="section-title">Sandbox Instances</div>
+                    <div class="glass-panel no-padding overflow-auto">
+                        <table class="data-table" id="instances-table">
+                            <thead>
+                                <tr>
+                                    <th>Status</th>
+                                    <th>Name</th>
+                                    <th>Uptime</th>
+                                    <th>IP Address</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td colspan="5" class="empty-msg">No sandbox instances found.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+
+            <div id="stacks-view" class="tab-view">
+                <section class="section">
+                    <div class="section-title">Registered Stacks</div>
+                    <div class="grid stacks-grid" id="stacks-list">
+                        <!-- Stacks will be injected here -->
+                    </div>
+                </section>
+            </div>
+
+            <div id="logs-view" class="tab-view">
+                <section class="section">
+                    <div class="section-title">Audit Logs (Last 100)</div>
+                    <div class="glass-panel log-container">
+                        <div id="audit-logs" class="log-stream">
+                            <div class="log-line system">Waiting for log data...</div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <div id="settings-view" class="tab-view">
+                <div class="settings-tabs">
+                    <button class="settings-tab-btn active" data-settings-tab="general">General System</button>
+                    <button class="settings-tab-btn" data-settings-tab="git">Git</button>
+                    <button class="settings-tab-btn" data-settings-tab="egress">Egress Proxy</button>
+                    <button class="settings-tab-btn" data-settings-tab="credentials">Credentials</button>
+                </div>
+
+                <!-- General Settings -->
+                <div id="settings-general" class="settings-sub-view active">
+                    <section class="section">
+                        <div class="glass-panel settings-form">
+                            <div class="settings-group">
+                                <h3 class="settings-group-title">Core Engine <span
+                                        class="required-badge">Required</span></h3>
+                                <div class="form-grid">
+                                    <div class="form-group">
+                                        <label>HTTP Port</label>
+                                        <input type="text" id="conf-port" placeholder="3100" required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Stacks Directory</label>
+                                        <input type="text" id="conf-stacks-dir" required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Audit Log Path</label>
+                                        <input type="text" id="conf-audit-log" required>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="settings-group">
+                                <h3 class="settings-group-title">Docker Runtime</h3>
+                                <div class="form-grid">
+                                    <div class="form-group">
+                                        <label>Host Directory (Absolute Path)</label>
+                                        <input type="text" id="conf-host-dir" placeholder="/path/to/carapa-box">
+                                        <small class="form-hint">Required for containerized mode</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Docker Socket GID</label>
+                                        <input type="text" id="conf-docker-gid" placeholder="1001">
+                                        <small class="form-hint">Matches host's docker.sock</small>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="settings-group">
+                                <h3 class="settings-group-title">Carapa Integration</h3>
+                                <div class="form-grid">
+                                    <div class="form-group">
+                                        <label>Carapa Data Directory</label>
+                                        <input type="text" id="conf-carapa-data-dir" placeholder="/path/to/carapa/data">
+                                        <small class="form-hint">CARAPA_DATA_DIR — base data directory for carapa components</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>IPC Mount Path</label>
+                                        <input type="text" id="conf-ipc-mount" placeholder="/path/to/ipc">
+                                        <small class="form-hint">IPC_MOUNT — inter-stack IPC directory. Derived from CARAPA_DATA_DIR/data/ipc if unset</small>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="form-footer">
+                                <button class="button save-settings-action" data-config-file="root">Apply System
+                                    Changes</button>
+                                <span class="settings-status-msg"></span>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- Git Settings -->
+                <div id="settings-git" class="settings-sub-view">
+                    <section class="section">
+                        <div class="glass-panel settings-form">
+                            <div class="settings-group">
+                                <h3 class="settings-group-title">Git Sandboxes</h3>
+                                <div class="form-grid">
+                                    <div class="toggle-group">
+                                        <div class="toggle-label">
+                                            <strong>Enable Git Sandboxes</strong>
+                                            <span>Enable sandbox_git tools</span>
+                                        </div>
+                                        <div class="toggle-switch" id="toggle-git"></div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Agent SSH Keys Folder</label>
+                                        <input type="text" id="conf-keys-folder" placeholder="~/.ssh">
+                                        <small class="form-hint">Default SSH keys path for git operations. Stacks can override this in their own .env</small>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="settings-group">
+                                <h3 class="settings-group-title">Issue Tracker</h3>
+                                <div class="form-grid">
+                                    <div class="toggle-group">
+                                        <div class="toggle-label">
+                                            <strong>Enable Issue Tracker</strong>
+                                            <span>Enable GitHub/GitLab integration</span>
+                                        </div>
+                                        <div class="toggle-switch" id="toggle-issues"></div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>GitLab Host URL</label>
+                                        <input type="text" id="conf-gitlab-host" placeholder="https://gitlab.com">
+                                        <small class="form-hint">Default: https://gitlab.com</small>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="form-footer">
+                                <button class="button save-settings-action" data-config-file="git-unified">Apply Git Settings</button>
+                                <span class="settings-status-msg"></span>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- Egress Settings -->
+                <div id="settings-egress" class="settings-sub-view">
+                    <section class="section">
+                        <div class="glass-panel settings-form">
+                            <div class="settings-group">
+                                <h3 class="settings-group-title">Network Isolation</h3>
+                                <div class="form-grid">
+                                    <div class="form-group">
+                                        <label>Rate Limit (Per Client)</label>
+                                        <input type="text" id="conf-egress-rl-client" placeholder="60">
+                                        <small class="form-hint">RATE_LIMIT_PER_CLIENT</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Global Rate Limit</label>
+                                        <input type="text" id="conf-egress-rl-global" placeholder="300">
+                                        <small class="form-hint">RATE_LIMIT_GLOBAL</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Rate Limit Window (seconds)</label>
+                                        <input type="text" id="conf-egress-rl-window" placeholder="60">
+                                        <small class="form-hint">RATE_LIMIT_WINDOW_S (default 60)</small>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="settings-group">
+                                <h3 class="settings-group-title">Relay Runtime</h3>
+                                <div class="form-grid">
+                                    <div class="form-group">
+                                        <label>Relay Clients Directory</label>
+                                        <input type="text" id="conf-relay-clients-dir" placeholder="./relay-clients">
+                                        <small class="form-hint">RELAY_CLIENTS_DIR — directory containing relay client configs</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Relay UID</label>
+                                        <input type="text" id="conf-relay-uid" placeholder="1000">
+                                        <small class="form-hint">RELAY_UID — user ID for api-relay container</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Relay GID</label>
+                                        <input type="text" id="conf-relay-gid" placeholder="1000">
+                                        <small class="form-hint">RELAY_GID — group ID for api-relay container</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Local LLM Port</label>
+                                        <input type="text" id="conf-llama-port" placeholder="8880">
+                                        <small class="form-hint">LLAMA_PORT — port for llama-proxy to forward to host (default 8880)</small>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="form-footer">
+                                <button class="button save-settings-action" data-config-file="egress">Update Proxy
+                                    Rules</button>
+                                <span class="settings-status-msg"></span>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- Credentials Settings -->
+                <div id="settings-credentials" class="settings-sub-view">
+                    <section class="section">
+                        <div class="section-title">Provider Accounts</div>
+                        <div class="glass-panel no-padding overflow-auto">
+                            <table class="data-table" id="provider-accounts-table">
+                                <thead>
+                                    <tr>
+                                        <th>Status</th>
+                                        <th>Provider</th>
+                                        <th>Account</th>
+                                        <th>Scope</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td colspan="4" class="empty-msg">Loading provider accounts...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <small class="form-hint">Connect, reconnect, or scope accounts in CarapaBoard &rarr; Provider accounts. Shared accounts replace a provider's default credentials; client accounts apply to one relay client.</small>
+                    </section>
+
+                    <section class="section">
+                        <div class="glass-panel settings-form">
+                            <div class="settings-group">
+                                <h3 class="settings-group-title">Provider Account Storage</h3>
+                                <div class="form-grid">
+                                    <div class="form-group">
+                                        <label>Provider Accounts Directory</label>
+                                        <input type="text" id="conf-provider-accounts-dir" placeholder="/home/youruser/.carapa-box/provider-accounts">
+                                        <small class="form-hint">PROVIDER_ACCOUNTS_DIR — saved to both CarapaBox and egress-proxy .env. Absolute host path, mode 0700, outside every sandbox mount</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Relay Clients Directory</label>
+                                        <input type="text" id="conf-provider-relay-clients-dir" placeholder="./egress-proxy/relay-clients">
+                                        <small class="form-hint">PROVIDER_RELAY_CLIENTS_DIR — the relay-clients directory itself (read-only to CarapaBox)</small>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="settings-group">
+                                <h3 class="settings-group-title">Login Worker</h3>
+                                <div class="form-grid">
+                                    <div class="form-group">
+                                        <label>Login Image</label>
+                                        <input type="text" id="conf-provider-login-image" placeholder="carapa-bot:0.1.0">
+                                        <small class="form-hint">PROVIDER_LOGIN_IMAGE — trusted local image; never pulled by a login</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Harness Volume</label>
+                                        <input type="text" id="conf-provider-login-volume" placeholder="from stacks/carapa-bot/harness.py status">
+                                        <small class="form-hint">PROVIDER_LOGIN_HARNESS_VOLUME — must contain the provider login CLIs</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Login Network</label>
+                                        <input type="text" id="conf-provider-login-network" placeholder="egress_proxy">
+                                        <small class="form-hint">PROVIDER_LOGIN_NETWORK (default egress_proxy)</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Login Proxy</label>
+                                        <input type="text" id="conf-provider-login-proxy" placeholder="http://squid:3128">
+                                        <small class="form-hint">PROVIDER_LOGIN_PROXY (default http://squid:3128)</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Login UID:GID</label>
+                                        <input type="text" id="conf-provider-login-uid" placeholder="CarapaBox process UID:GID">
+                                        <small class="form-hint">PROVIDER_LOGIN_UID — must own the accounts directory (leave empty to use CarapaBox's identity)</small>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="form-footer">
+                                <button class="button save-settings-action" data-config-file="provider-accounts">Save Provider Account Settings</button>
+                                <span class="settings-status-msg"></span>
+                            </div>
+                            <small class="form-hint">Restart CarapaBox and api-relay after changing these settings. In container mode the CarapaBox .env is mounted read-only; edit it on the host.</small>
+                        </div>
+                    </section>
+
+                    <section class="section">
+                        <div class="glass-panel settings-form">
+                            <div class="settings-group">
+                                <h3 class="settings-group-title">Secrets</h3>
+                                <div class="form-grid">
+                                    <div class="form-group">
+                                        <label>Secrets Directory</label>
+                                        <input type="text" id="conf-egress-secrets" placeholder="./secrets/box">
+                                        <small class="form-hint">SECRETS_DIR — path to Docker secrets files (API keys, service tokens)</small>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="form-footer">
+                                <button class="button save-settings-action" data-config-file="credentials">Save Secrets Directory</button>
+                                <span class="settings-status-msg"></span>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <!-- Auth Overlay -->
+    <div id="auth-overlay" class="overlay">
+        <div class="auth-card glass-panel">
+            <img src="carapa-box.png" class="auth-logo" alt="CarapaBox Logo">
+            <h2>CarapaBox Admin</h2>
+            <p>Please enter your access token to continue.</p>
+            <input type="password" id="token-input" placeholder="CARAPA_BOX_ADMIN_TOKEN">
+            <button id="login-btn">Secure Login</button>
+        </div>
+    </div>
+
+    <script src="admin.js"></script>
+</body>
+
+</html>

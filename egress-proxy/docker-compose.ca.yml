@@ -1,0 +1,16 @@
+# Optional deployment-specific trust for a private CA, e.g. when a box reaches
+# the central relay (CARAPA_RELAY_UPSTREAM) through a certificate from your own CA. Enable with
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.ca.yml
+#   CARAPA_CA_CERTIFICATE=/absolute/host/path/root.crt
+# Public roots stay trusted; certificate verification stays on.
+services:
+  api-relay:
+    environment:
+      NODE_EXTRA_CA_CERTS: /usr/local/share/ca-certificates/carapa-local-root.crt
+    volumes:
+      - type: bind
+        source: ${CARAPA_CA_CERTIFICATE:?Set the absolute host path of the deployment CA}
+        target: /usr/local/share/ca-certificates/carapa-local-root.crt
+        read_only: true
+        bind:
+          create_host_path: false

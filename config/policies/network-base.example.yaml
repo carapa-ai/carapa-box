@@ -1,0 +1,72 @@
+# CarapaBox base network policy
+# Copy to network-base.yaml. Domains allowed for all stacks. Per-stack policies
+# (stacks/{name}/network-policy.yaml) add to this list.
+# Edit and save — changes are picked up automatically within ~2 seconds.
+# A leading dot also allows subdomains (.example.com matches api.example.com).
+
+# relay_domains are reachable by the api-relay container only (CONNECT), never by
+# sandboxes — e.g. remote MCP / OAuth authorization-server hosts the relay calls
+# with credentials it holds. Every other source is denied these hosts, even when a
+# wildcard entry in allowed_domains (or a stack policy) would otherwise match.
+# relay_domains:
+#   - mcp.example.com
+
+# host_ports / host_deny_ports limit what sandboxes may reach on host.docker.internal.
+# Entries are an integer port or a low-high range (1-65535). host_deny_ports is
+# checked first; set it to the host ports of Board and carapa-box when they are not
+# on the defaults (sandboxes reach both through api-relay only). host_ports replaces
+# the default allowed range. Defaults are shown below.
+# host_ports:
+#   - 3000-9999
+#   - 11434
+# host_deny_ports:
+#   - 3000
+#   - 3100
+
+allowed_domains:
+  # CarapaBox services
+  - .carapa.ai
+
+  # AI providers
+  - .anthropic.com
+  - platform.claude.com
+  - .openai.com
+  - .chatgpt.com
+  - .googleapis.com
+  - accounts.google.com
+  - antigravity-unleash.goog   # Antigravity CLI (agy) control plane
+  - .antigravity.google        # agy login/config (inference uses *.googleapis.com)
+  - .cursor.sh
+  - api.meta.ai                # Muse Code (inference, sessions, updates)
+  - auth.meta.com              # Muse Code sign-in refresh
+  - cli-chat-proxy.grok.com    # Grok Build subscription inference
+  - auth.x.ai                  # Grok Build sign-in and refresh
+  - accounts.x.ai              # Grok Build device sign-in page
+  - opencode.ai
+  - models.dev
+  - openrouter.ai
+  - integrate.api.nvidia.com
+  - api.eu.mistral.ai          # Mistral EU endpoint only; not .mistral.ai (global/US hosts)
+  - .sentry.io
+
+  # Package managers
+  - .npmjs.org
+  - .npmjs.com
+  - .yarnpkg.com
+  - .packagist.org
+  - .getcomposer.org
+  - .github.com
+  - .githubusercontent.com
+  - .githubassets.com
+  - pypi.org
+  - files.pythonhosted.org
+
+  # Dev docs & frameworks
+  - .bun.sh
+  - .hono.dev
+  - .getpino.io
+  - .zod.dev
+  - docs.docker.com
+  - .nodejs.org
+  - developer.mozilla.org
+  - .typescriptlang.org

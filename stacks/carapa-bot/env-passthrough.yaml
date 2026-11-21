@@ -1,0 +1,12 @@
+# Environment variables that callers can inject via sandbox_start or sandbox_exec
+allowed_keys:
+  - LOCAL_REPO
+  - GIT_REPO
+  - DEFAULT_BRANCH
+  - GROUP_DIR
+  - WORKSPACE_PATH
+  - COMPOSE_FILE
+  - EXTRA_MOUNT_1
+  - EXTRA_MOUNT_2
+  - EXTRA_MOUNT_1_NAME
+  - EXTRA_MOUNT_2_NAME

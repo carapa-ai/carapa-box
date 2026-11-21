@@ -1,0 +1,18 @@
+# Hermes Agent configuration shipped with the carapa-bot image.
+#
+# `mcp_servers` is read at startup and the listed endpoints are queried
+# with `tools/list` to discover what the LLM can call. The tool namespace
+# the LLM sees is `mcp_<server>_<tool>` (Hermes prefixes to avoid
+# collisions with built-in tools).
+#
+# Authentication for carapa-board: the api-relay container injects a
+# per-project Bearer token on every request, so no `headers:` block is
+# needed. If carapa-board is moved off the api-relay path, copy the
+# `headers:` shape from /usr/local/stack-cli-bin/fixmcp.sh:
+#   Authorization: Bearer ${CARAPA_BOARD_API_TOKEN}
+# The token must be mounted under /run/secrets/ for the ${...}
+# substitution to resolve (Hermes reads ~/.hermes/.env at startup).
+mcp_servers:
+  carapa-board:
+    url: "http://api-relay:8080/mcp-relay/mcp/carapa-board"
+    enabled: true

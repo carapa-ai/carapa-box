@@ -1,0 +1,125 @@
+#!/usr/bin/env node
+'use strict';
+// Disposable integration check. "board" uses this checkout's real UI hook.
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const { randomBytes } = require('node:crypto');
+const { execFile, spawn } = require('node:child_process');
+const { promisify } = require('node:util');
+const { once } = require('node:events');
+const exec = promisify(execFile);
+const root = fs.mkdtempSync('/tmp/carapa-browser-app-check-');
+const realBoard = process.argv[2] === 'board';
+if (process.argv.length > 3 || process.argv[2] && !realBoard) throw new Error('Usage: browser-app-check [board]');
+const cwd = realBoard ? process.cwd() : root;
+if (realBoard && JSON.parse(fs.readFileSync('package.json', 'utf8')).name !== 'carapa-board') throw new Error('Board checkout required');
+const id = 'browser-' + randomBytes(20).toString('hex');
+const browserEnv = { CARAPA_BROWSER_SESSION_ID: id, CARAPA_BROWSER_WORK_DIR: cwd,
+  PLAYWRIGHT_CLI_SESSION: id, PLAYWRIGHT_DAEMON_SESSION_DIR: '/tmp/pwcli-' + id,
+  PLAYWRIGHT_DAEMON_SOCKETS_DIR: '/tmp/pwcli-' + id + '/sockets' };
+const env = { ...process.env, ...browserEnv };
+delete env.CARAPA_BROWSER_CONTEXT_FILE;
+const file = '/workspace/ipc/browser-sessions/' + id + '.json';
+let viewer;
+async function tool(name, args, environment = process.env) {
+  const result = await exec(process.execPath, [path.join(__dirname, name), ...args], {cwd:fs.existsSync(cwd)?cwd:'/',env:environment,timeout:130_000,maxBuffer:2*1024*1024});
+  assert(!result.stdout.includes('### Error'), result.stdout);
+  return result.stdout;
+}
+const appState = () => JSON.parse(fs.readFileSync(env.PLAYWRIGHT_DAEMON_SESSION_DIR + '/app/owner.json', 'utf8'));
+const appUrl = () => fs.readFileSync(env.PLAYWRIGHT_DAEMON_SESSION_DIR + '/app/url', 'utf8').trim();
+async function frame() {
+  viewer = spawn(process.execPath, [path.join(__dirname, 'browser-viewer'), id], {cwd,stdio:['pipe','pipe','pipe']});
+  viewer.stderr.resume();
+  let pending = '';
+  const received = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('No viewer frame')), 20_000);
+    viewer.stdout.on('data', chunk => {
+      pending += chunk.toString(); let index;
+      while ((index = pending.indexOf('\n')) >= 0) {
+        const event = JSON.parse(pending.slice(0,index)); pending = pending.slice(index+1);
+        if (event.type === 'error') { clearTimeout(timeout); reject(new Error(event.error)); }
+        if (event.type === 'message' && JSON.parse(event.data).method === 'frame') { clearTimeout(timeout); resolve(); }
+      }
+    });
+  });
+  await received;
+  viewer.stdin.end(); await once(viewer,'exit'); viewer = undefined;
+}
+(async () => {
+  if (!realBoard) {
+    fs.mkdirSync(path.join(root,'.agent'));
+    fs.writeFileSync(path.join(root,'.agent/start-browser.sh'), '#!/bin/sh\nexec node .agent/app.cjs\n');
+    fs.writeFileSync(path.join(root,'.agent/app.cjs'), `
+      const fs = require('node:fs'), http = require('node:http');
+      const server = http.createServer((req,res) => res.end('<title>Hook preview</title><h1>Hook preview</h1>'));
+      server.listen(0,'127.0.0.1',() => fs.writeFileSync(process.env.CARAPA_BROWSER_URL_FILE, 'http://127.0.0.1:'+server.address().port));
+      process.once('SIGTERM',() => server.close(() => process.exit(0)));
+    `);
+  }
+  fs.mkdirSync(path.dirname(file),{recursive:true});
+  fs.writeFileSync(file,JSON.stringify({id,projectId:'browser-app-probe',conversationId:null,workDir:cwd,worktree:null,env:browserEnv}), {mode:0o600});
+  await tool('browser-open',[id,'start']);
+  const first = appState(), url = appUrl();
+  assert.equal((await fetch(url)).status,200);
+  if (realBoard) {
+    await tool('playwright-cli',['run-code',`async page => {
+      const auth = await page.evaluate(async () => (await fetch('/api/auth/check')).json());
+      if (auth.user?.username !== 'ui-admin' || auth.device?.isApproved !== true) throw new Error('Shared preview browser was not authenticated');
+      await page.locator('[data-ui="kanban-content"]').waitFor();
+    }`],env);
+    await exec('bun', ['-e', `
+      import { allocateBrowserTestRuntime, runBrowserCli } from './ui/src/test-utils/browser-runtime.ts';
+      const runtime = await allocateBrowserTestRuntime('shared-preview-check');
+      try {
+        if (!runtime.managed || runtime.env.PLAYWRIGHT_CLI_SESSION !== process.env.PLAYWRIGHT_CLI_SESSION) throw new Error('Browser tests lost managed ownership');
+        const location = await runBrowserCli(runtime, ['eval', '() => location.href']);
+        if (!location.includes(${JSON.stringify(url)})) throw new Error('Browser tests did not reuse the shared page');
+      } finally { runtime.cleanup(); }
+    `], {cwd, env, timeout:30_000});
+  }
+  else assert((await tool('playwright-cli',['eval','() => document.title'],env)).includes('Hook preview'));
+  await frame();
+  assert.equal((await fetch(url)).status,200,'Viewer detach must leave the app running');
+  await tool('browser-open',[id,'start']);
+  assert.deepEqual(appState(),first,'Repeated Start must reuse the app');
+  if (!realBoard) {
+    // An app can stop while its browser survives; Start must navigate that
+    // browser to the replacement app's dynamically allocated address.
+    process.kill(first.pid,'SIGTERM');
+    for (let i = 0; i < 200; i++) {
+      try { await fetch(url,{signal:AbortSignal.timeout(100)}); }
+      catch { break; }
+      await new Promise(resolve => setTimeout(resolve,50));
+    }
+    await tool('browser-open',[id,'start']);
+    assert((await tool('playwright-cli',['eval','() => location.href'],env)).includes(appUrl()));
+  }
+  await tool('browser-open',[id,'restart']);
+  assert.notDeepEqual(appState(),first,'Explicit Restart owns a new app process');
+  const restartedUrl = appUrl();
+  await tool('browser-close',[id]);
+  await assert.rejects(fetch(restartedUrl,{signal:AbortSignal.timeout(2000)}));
+  if (!realBoard) {
+    const hook = fs.readFileSync(path.join(root,'.agent/start-browser.sh'),'utf8');
+    fs.writeFileSync(path.join(root,'.agent/start-browser.sh'),'#!/bin/sh\necho deliberate-hook-failure >&2\nexit 1\n');
+    await assert.rejects(tool('browser-open',[id,'start']), /deliberate-hook-failure/);
+    fs.writeFileSync(path.join(root,'.agent/start-browser.sh'),hook);
+    await tool('browser-open',[id,'start']);
+    const orphanedUrl = appUrl();
+    fs.rmSync(root,{recursive:true,force:true});
+    // Cleanup must release real processes even after a worktree is removed;
+    // opening and viewing must still reject the missing workspace.
+    await assert.rejects(tool('browser-open',[id,'start']), /Browser working directory does not exist/);
+    await tool('browser-close',[id]);
+    await assert.rejects(fetch(orphanedUrl,{signal:AbortSignal.timeout(2000)}));
+    assert(!fs.existsSync(env.PLAYWRIGHT_DAEMON_SESSION_DIR));
+  }
+  console.log(JSON.stringify({ok:true,realBoard,authenticated:realBoard,hook:true,loopback:true,viewer:true,reuse:true,restart:true,cleanup:true}));
+})().catch(error => {console.error(error);process.exitCode=1;}).finally(async () => {
+  if (viewer && viewer.exitCode === null) viewer.stdin.end();
+  await tool('browser-close',[id]).catch(error => {console.error('Probe cleanup failed:',error.message);process.exitCode=1;});
+  fs.rmSync(file,{force:true});
+  fs.rmSync(root,{recursive:true,force:true});
+});

@@ -1,0 +1,16 @@
+#!/bin/sh
+# Hash or commit one approved proposal with CarapaBoard's promotion script:
+#   carapa-promotion <carapa-board checkout> hash|apply <payload.json>
+# CarapaBox runs only trusted commands, so Board calls this instead of bun.
+set -eu
+if [ "$#" -ne 3 ]; then
+  echo "Usage: carapa-promotion <carapa-board checkout> hash|apply <payload.json>" >&2
+  exit 2
+fi
+REPO=$1
+shift
+case "$REPO" in
+  /*) ;;
+  *) echo "ERROR: the carapa-board checkout must be an absolute path" >&2; exit 2 ;;
+esac
+exec bun --no-env-file "$REPO/scripts/apply-promotion.ts" "$@"

@@ -1,0 +1,38 @@
+{
+  "providers": {
+    "gitlab": {
+      "auth": "apikey",
+      "envKey": "GITLAB_PAT",
+      "envHost": "GITLAB_HOST_URL"
+    },
+    "openrouter": {
+      "auth": "apikey",
+      "envKey": "OPENROUTER_API_KEY"
+    },
+    "nvidia": {
+      "auth": "apikey",
+      "envKey": "NVIDIA_API_KEY"
+    },
+    "mistral-eu": {
+      "auth": "apikey",
+      "envKey": "MISTRAL_API_KEY"
+    },
+    "mistral-vibe": {
+      "host": "api.eu.mistral.ai",
+      "auth": "apikey",
+      "envKey": "MISTRAL_VIBE_API_KEY"
+    }
+  },
+  "services": {
+    "cloud-tts": {
+      "host": "cloud-tts",
+      "port": 7790,
+      "auth": "none"
+    },
+    "cloud-image": {
+      "host": "cloud-image",
+      "port": 7791,
+      "auth": "none"
+    }
+  }
+}

@@ -1,0 +1,55 @@
+# CarapaBox
+
+> MCP server that manages Docker Compose stacks through pre-defined, admin-verified configurations for AI agent sandboxing.
+
+## Overview
+
+CarapaBox provides isolated Docker-based coding environments for AI agents via the Model Context Protocol (MCP). Each sandbox runs in its own Docker Compose stack with OPA/Rego security policies, per-instance network isolation, and an egress proxy for controlled internet access.
+
+## Transport
+
+- **stdio**: For human operators running the CLI directly
+- **HTTP/SSE**: For AI agents connecting from inside containers (Streamable HTTP transport)
+
+## MCP Tools
+
+- `sandbox_list` — List available sandbox stacks
+- `sandbox_start` — Start an isolated sandbox environment
+- `sandbox_stop` — Stop and clean up a sandbox
+- `sandbox_exec` — Execute a stack override from `/usr/local/stack-cli-bin`, or fall back to an image-built tool in `/usr/local/ai-cli-bin`, without a shell. It stays shell-free and accepts exactly one composite form, the Board's restart-recovery receipt suffix, whose receipt the box creates after a successful exit.
+- `sandbox_status` — Check container health and status
+- `sandbox_ps` — List all running sandbox instances
+- `sandbox_logs` — View service logs
+- `sandbox_policy_check` — Dry-run a command against security policy
+- `sandbox_commands` — List available slash commands (skills + commands) from a running sandbox container
+- `sandbox_ssh` — Get, enable, or disable key-only SSH inside an approved sandbox
+- `sandbox_publish_app` — Publish, inspect, or revoke one HTTP app on an owned sandbox service through CarapaBox ingress
+- `sandbox_proxy_aliases` — Update public hostname aliases for a running sandbox's generated nginx route without restarting
+- `sandbox_network_policy_reload` — Reload network policies from .rego files and apply them to Squid via `squid -k reconfigure`
+- `sandbox_git` — Run a git command on the sandbox workspace volume using host-side SSH keys (when `ENABLE_SANDBOX_GIT` is set)
+- `sandbox_worktree` — Manage git worktrees on the sandbox workspace volume (when `ENABLE_SANDBOX_GIT` is set)
+- `sandbox_branch` — Atomic git branch lifecycle operations for task stage transitions (when `ENABLE_SANDBOX_GIT` is set)
+- `sandbox_issues` — Manage GitHub/GitLab issues; API tokens never enter the sandbox (when `ENABLE_GIT_ISSUES` is set)
+- `group_list` — List a directory inside a project's group directory on this box
+- `group_read` — Read a file inside a project's group directory on this box
+- `group_write` — Write (atomic) or delete a file inside a project's group directory on this box
+- `sandbox_ipc_projects` — List IPC project directories that exist on this Box
+- `sandbox_ipc` — Batch file operations on a sandbox's IPC directory
+- `sandbox_ipc_sync` — Replicate one IPC subtree with a caller-side replica
+- `sandbox_relay_token` — Set or clear a per-sandbox relay credential
+- `build_service` — Build the Docker image for a managed service (or queue a host build)
+- `build_service_status` — Report a queued host build: pending, running, succeeded or failed
+- `restart_service` — Force-recreate a managed Docker Compose service from its current image
+
+## Security Model
+
+- OPA/Rego policy engine (compiled WASM) for command validation
+- Environment variable passthrough allowlists
+- Mount path allowlists
+- Per-instance Docker network isolation
+- Egress proxy with per-stack domain ACLs (Squid)
+- Seccomp and AppArmor profiles per service role
+
+## License
+
+Apache-2.0

@@ -1,0 +1,79 @@
+{
+  "skill_name": "hardened-dockerfile",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Create a Dockerfile for a Node.js API server that connects to MariaDB. It should run on port 3000 and needs the mysql2 npm package. Include Claude Code as the AI agent.",
+      "expected_output": "A multi-stage hardened Dockerfile with DHI node base image, digest pin, non-root user, healthcheck, OCI labels, Claude Code agent installed via build stage, and a compose snippet with seccomp/AppArmor for agent role",
+      "files": [],
+      "expectations": [
+        "All FROM lines use dhi.io/ base images",
+        "All FROM lines include @sha256: digest pin or REPLACE_WITH_ACTUAL_DIGEST placeholder",
+        "Uses multi-stage build with separate build and runtime stages",
+        "Runtime stage uses --no-install-recommends on apt-get install",
+        "Cache cleanup (rm -rf /var/lib/apt/lists/*) in same RUN layer as apt-get install",
+        "Non-root USER with UID 1000 is defined",
+        "HEALTHCHECK instruction is present and targets port 3000",
+        "OCI labels (org.opencontainers.image.*) are present",
+        "Claude Code (@anthropic-ai/claude-code) is installed in build stage via npm install -g",
+        "Agent binaries are copied from build stage using COPY --from=build",
+        "npm is not left in the runtime stage (or justified if present)",
+        "PATH includes /usr/local/ai-cli-bin for CarapaBox compatibility",
+        "jq is installed in the runtime image for run-agent.sh compatibility",
+        "CVE scan hook is provided as a before-start.sh snippet (runs on host, not inside container)",
+        "Compose snippet includes seccomp:seccomp-default.json and apparmor=carapabox-agent",
+        "Compose snippet includes read_only: true and cap_drop: ALL",
+        "Compose snippet includes tmpfs mounts for /tmp and /run",
+        "Compose snippet includes deploy.resources.limits with pids for every service",
+        "Compose snippet includes logging driver with max-size and max-file limits",
+        "No secrets (API keys, passwords) appear in ARG, ENV, or COPY instructions"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Harden this existing Dockerfile:\n\nFROM debian:bookworm-slim\nRUN apt-get update && apt-get install -y bash curl git nodejs npm python3 ripgrep && rm -rf /var/lib/apt/lists/*\nCOPY bridge.js /usr/local/bin/model-bridge\nRUN chmod +x /usr/local/bin/model-bridge\nRUN groupadd -g 1000 sandbox && useradd -m -u 1000 -g sandbox -s /bin/bash sandbox\nUSER sandbox\nWORKDIR /workspace\nCMD [\"sleep\", \"infinity\"]",
+      "expected_output": "A hardened replacement Dockerfile using DHI base images, digest pins, multi-stage build, minimal packages with comments, and security defaults",
+      "files": [],
+      "expectations": [
+        "Replaces debian:bookworm-slim with a dhi.io/ base image",
+        "All FROM lines include @sha256: digest pin or placeholder",
+        "Uses multi-stage build (at least build + runtime stages)",
+        "Uses --no-install-recommends on apt-get install",
+        "npm package is removed from runtime (Node.js DHI image provides node without npm)",
+        "Every installed package has a comment explaining why it is needed",
+        "Cache cleanup in same layer as install",
+        "bridge.js is copied via COPY --from=build pattern",
+        "Non-root USER sandbox with UID 1000 is preserved",
+        "HEALTHCHECK instruction is added",
+        "OCI labels are added",
+        "CVE scan hook is provided as a before-start.sh snippet (runs on host, not inside container)",
+        "Compose snippet is provided with security_opt settings",
+        "Compose snippet includes deploy.resources.limits with pids for every service",
+        "Compose snippet includes logging driver with max-size and max-file limits"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Create a Dockerfile for a static nginx site that serves a React build from the ./build directory. No AI agents needed — this is a pure runtime service.",
+      "expected_output": "A multi-stage Dockerfile using DHI nginx base, copying only static assets, with no build tools or agents in the final image",
+      "files": [],
+      "expectations": [
+        "Uses dhi.io/nginx:stable-debian13 as the runtime base image",
+        "All FROM lines include @sha256: digest pin or placeholder",
+        "Uses multi-stage build — build stage compiles React, runtime serves static files",
+        "Runtime stage contains only nginx and static assets (no node, npm, or build tools)",
+        "COPY --from=build copies only the built static files to nginx html directory",
+        "Non-root user is configured or nginx runs as non-root",
+        "HEALTHCHECK instruction is present",
+        "OCI labels are present",
+        "No AI agents are installed (pure runtime service)",
+        "CVE scan hook is provided as a before-start.sh snippet (runs on host, not inside container)",
+        "Compose snippet uses seccomp-web.json and apparmor=carapabox-web (not agent profile)",
+        "Compose snippet includes read_only: true with tmpfs for /var/cache/nginx and /run",
+        "Compose snippet includes deploy.resources.limits with pids for every service",
+        "Compose snippet includes logging driver with max-size and max-file limits",
+        "No secrets in the image layers"
+      ]
+    }
+  ]
+}

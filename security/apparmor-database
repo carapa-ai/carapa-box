@@ -1,0 +1,147 @@
+#include <tunables/global>
+
+# AppArmor profile for CarapaBox database containers
+# Applies to: mariadb (×3 stacks), minio
+#
+# Purpose: Allow database file I/O, IPC, and client connections.
+#          Lock down everything outside database data directories.
+
+profile carapabox-database flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/mysql>
+
+  # ── Network ──────────────────────────────────────────────────────
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network unix stream,
+  network unix dgram,
+  network netlink raw,
+
+  # ── Capabilities ────────────────────────────────────────────────
+  capability chown,
+  capability setuid,
+  capability setgid,
+  capability fowner,
+  capability fsetid,
+  capability dac_override,
+  capability ipc_lock,         # mlock for buffer pool
+
+  # ── Deny sensitive paths ────────────────────────────────────────
+  deny /etc/shadow rwklx,
+  deny /etc/gshadow rwklx,
+  deny /etc/sudoers rwklx,
+  deny /etc/sudoers.d/** rwklx,
+  deny /proc/*/environ r,
+  deny /proc/sysrq-trigger rwklx,
+  deny /proc/sys/** w,
+  deny /proc/kcore rwklx,
+  deny /proc/kmsg rwklx,
+  deny /sys/** w,
+  /sys/block/ r,                           # mariadb I/O scheduler detection
+  /sys/block/** r,
+  /sys/devices/virtual/block/** r,         # block device physical_block_size
+  deny /root/** rwklx,
+  deny /home/** rwklx,
+  deny /dev/sd* rwklx,
+  deny /dev/nvme* rwklx,
+  deny /dev/xvd* rwklx,
+  deny /dev/vd* rwklx,
+  deny mount,
+
+  # ── Docker entrypoint ─────────────────────────────────────────
+  /docker-entrypoint.sh rix,
+  /docker-entrypoint-initdb.d/ r,
+  / r,                           # find needs to read root dir
+
+  # ── MariaDB data & config ─────────────────────────────────────
+  /var/lib/mysql/ r,
+  /var/lib/mysql/** rwk,
+  /var/log/mysql/** rw,
+  /run/mysqld/** rw,
+  /etc/mysql/** r,
+  /etc/my.cnf r,
+  /etc/my.cnf.d/ r,
+  /etc/my.cnf.d/** r,
+  /docker-entrypoint-initdb.d/** r,
+
+  # ── MinIO data ─────────────────────────────────────────────────
+  /data/ r,
+  /data/** rw,
+
+  # ── Temp & runtime ────────────────────────────────────────────
+  /tmp/ r,
+  /tmp/** rwk,
+  /run/** rw,
+  /var/tmp/** rw,
+
+  # ── System binaries & libraries ────────────────────────────────
+  /usr/** rix,
+  /lib/** rix,
+  /lib64/** rix,
+  /bin/** rix,
+  /sbin/** rix,
+
+  # ── System config (read-only) ──────────────────────────────────
+  /etc/passwd r,
+  /etc/group r,
+  /etc/hosts r,
+  /etc/resolv.conf r,
+  /etc/host.conf r,
+  /etc/nsswitch.conf r,
+  /etc/ssl/** r,
+  /etc/ca-certificates/** r,
+  /etc/ld.so.cache r,
+  /etc/ld.so.conf r,
+  /etc/ld.so.conf.d/** r,
+  /etc/localtime r,
+  /etc/timezone r,
+
+  # ── Logging ────────────────────────────────────────────────────
+  /var/log/** rw,
+
+  # ── Device access ──────────────────────────────────────────────
+  /dev/null rw,
+  /dev/zero r,
+  /dev/full rw,
+  /dev/random r,
+  /dev/urandom r,
+  /dev/tty rw,
+  /dev/pts/* rw,
+  /dev/ptmx rw,
+  /dev/shm/** rw,
+  /dev/fd/** rw,
+
+  # ── Proc (filtered) ───────────────────────────────────────────
+  /proc/ r,
+  /proc/self/** r,
+  /proc/[0-9]*/stat r,
+  /proc/[0-9]*/status r,
+  /proc/[0-9]*/fd/** rw,
+  /proc/[0-9]*/fdinfo/** r,
+  /proc/[0-9]*/maps r,
+  /proc/[0-9]*/net/** r,
+  /proc/[0-9]*/cgroup r,
+  /proc/[0-9]*/oom_score_adj rw,
+  /proc/[0-9]*/mounts r,
+  /proc/[0-9]*/mountinfo r,
+  /proc/meminfo r,
+  /proc/cpuinfo r,
+  /proc/filesystems r,
+  /proc/stat r,
+  /proc/loadavg r,
+  /proc/uptime r,
+  /proc/version r,
+  /proc/vmstat r,
+  /proc/sys/kernel/hostname r,
+  /proc/sys/kernel/osrelease r,
+  /proc/sys/kernel/ngroups_max r,
+  /proc/sys/vm/overcommit_memory r,
+  /proc/sys/net/** r,
+
+  # ── Signal handling ────────────────────────────────────────────
+  signal,
+  ptrace read peer=carapabox-database,
+}

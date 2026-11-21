@@ -1,0 +1,28 @@
+#!/bin/sh
+# The http://nginx default exists only in stacks with an nginx sidecar.
+if [ -z "${1:-}" ] && ! node -e "require('dns').lookup('nginx', e => process.exit(e ? 1 : 0))"; then
+  echo "screenshot: this sandbox has no nginx service; pass the page URL" >&2
+  exit 1
+fi
+URL="${1:-http://nginx}"
+OUTPUT="${2:-/tmp/screenshot.png}"
+[ "${3:-}" = "full" ] && FULL_OPT=true || FULL_OPT=false
+
+node -e "
+const { chromium } = require('playwright');
+(async () => {
+  const browser = await chromium.launch({
+    executablePath: '/usr/bin/chromium',
+    args: ['--no-sandbox', '--disable-gpu', '--single-process', '--no-zygote', '--disable-software-rasterizer', '--disable-dev-shm-usage'],
+    headless: true,
+  });
+  const page = await browser.newPage();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto('${URL}', { waitUntil: 'networkidle', timeout: 30000 });
+  await page.screenshot({ path: '${OUTPUT}', fullPage: ${FULL_OPT} });
+  console.log('Title: ' + await page.title());
+  console.log('URL: ' + page.url());
+  console.log('Screenshot saved to ${OUTPUT}');
+  await browser.close();
+})().catch(e => { console.error(e.message); process.exit(1); });
+"

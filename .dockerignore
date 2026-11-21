@@ -1,0 +1,10 @@
+.git
+.env
+egress-proxy/.env
+config/mount-allowlist.yaml
+config/managed-services.yaml
+config/policies/network-base.yaml
+generated/
+state/
+secrets/
+egress-proxy/captures/

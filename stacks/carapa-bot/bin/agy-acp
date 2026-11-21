@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Terminal client for the Antigravity ACP harness (`antigravity acp`, Antigravity CLI).
+
+  agy-acp [--model NAME] [--cwd DIR] [--mcp] [--list-models] "prompt"
+
+Starts the harness (profile in ~/.cache/agy-acp, or $AGY_ACP_HOME) through the relay's Antigravity route (your Google AI Pro
+subscription), runs one prompt and prints the answer.
+Tool calls go to stderr; permissions are skipped (--dangerously-skip-permissions).
+Model names are Google's own, with the thinking level on the end, for example
+gemini-4-hydrogen-xhigh or gemini-3.8-flash-low (--list-models shows them).
+"""
+import argparse, json, os, queue, signal, subprocess, sys, threading
+
+STORE = os.environ.get('CARAPA_HARNESS_STORE', '/opt/carapa-harness-store')
+
+
+def harness_binary():
+    binary = os.environ.get('ANTIGRAVITY_ACP_BIN')
+    if not binary:
+        snapshot = os.environ.get('CARAPA_HARNESS_SNAPSHOT') or open(f'{STORE}/current').read().strip()
+        binary = json.load(open(f'{STORE}/snapshots/{snapshot}.json'))['entries']['antigravity-acp']['env']['ANTIGRAVITY_ACP_BIN']
+    return binary
+
+
+def main():
+    ap = argparse.ArgumentParser(description='Antigravity ACP harness from the terminal')
+    ap.add_argument('prompt', nargs='?')
+    ap.add_argument('--model', default='')
+    ap.add_argument('--cwd', default=os.getcwd())
+    ap.add_argument('--mcp', action='store_true',
+                    help="give the harness Board's MCP tools (carapa-board); they can create tasks, send messages and so on")
+    ap.add_argument('--list-models', action='store_true', help='print the harness model names and exit')
+    args = ap.parse_args()
+    if not args.prompt and not args.list_models:
+        args.prompt = sys.stdin.read()
+    try:
+        binary = harness_binary()
+    except Exception:
+        sys.exit('agy-acp: the antigravity-acp harness is not installed in this sandbox')
+
+    base = os.environ.get('GOOGLE_GEMINI_BASE_URL', 'http://api-relay:8080/google').rstrip('/')
+    if base.endswith('/google'):
+        base = base[:-len('/google')]
+    if not base.endswith('/antigravity'):
+        base += '/antigravity'
+    home = os.environ.get('AGY_ACP_HOME') or os.path.expanduser('~/.cache/agy-acp')
+    os.makedirs(f'{home}/antigravity-cli', mode=0o700, exist_ok=True)
+    # Without modelProvider the CLI ignores the relay URL and calls Google directly.
+    json.dump({'modelProvider': 'gemini'}, open(f'{home}/antigravity-cli/settings.json', 'w'))
+    host = base.split('//', 1)[1].split('/', 1)[0].split(':')[0]
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('AGY_ACP_', 'GOOGLE_', 'GEMINI_'))}
+    env.update(BROWSER='/bin/false', GEMINI_API_KEY='carapa-relay-placeholder', GOOGLE_GEMINI_BASE_URL=base)
+    # The CLI talks to its own language server over 127.0.0.1; both spellings must keep the proxy bypass.
+    bypass = ','.join(dict.fromkeys(filter(None, [*os.environ.get('NO_PROXY', '').split(','),
+                                                  *os.environ.get('no_proxy', '').split(','), 'localhost', '127.0.0.1', host])))
+    env.update(NO_PROXY=bypass, no_proxy=bypass)
+    proc = subprocess.Popen([binary, 'acp', '--gemini-dir', home, '--disable-telemetry', '--dangerously-skip-permissions'], env=env, cwd=args.cwd, text=True, bufsize=1,
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=(None if os.environ.get('AGY_ACP_DEBUG') else subprocess.DEVNULL))
+    lines = queue.Queue()
+    threading.Thread(target=lambda: [lines.put(l) for l in proc.stdout] or lines.put(None), daemon=True).start()
+    next_id = [0]
+    status = 0
+
+    def send(method, params):
+        next_id[0] += 1
+        proc.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': next_id[0], 'method': method, 'params': params}) + '\n')
+        proc.stdin.flush()
+        return next_id[0]
+
+    def call(method, params):
+        want = send(method, params)
+        while True:
+            message = pump()
+            if message.get('id') == want and 'method' not in message:
+                if 'error' in message:
+                    raise RuntimeError(f"{method}: {json.dumps(message['error'])[:600]}")
+                return message.get('result') or {}
+
+    def pump():
+        raw = lines.get()
+        if raw is None:
+            raise RuntimeError('the harness exited')
+        try:
+            message = json.loads(raw)
+        except ValueError:
+            return {}
+        method = message.get('method')
+        if method == 'session/request_permission' and message.get('id') is not None:
+            options = message.get('params', {}).get('options', [])
+            pick = next((o['optionId'] for o in options if o.get('kind') == 'allow_once'), None)
+            reply = {'outcome': {'outcome': 'selected', 'optionId': pick}} if pick else {'outcome': {'outcome': 'cancelled'}}
+            proc.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': reply}) + '\n')
+            proc.stdin.flush()
+        elif method == 'session/update':
+            update = message['params'].get('update', {})
+            kind = update.get('sessionUpdate')
+            if kind == 'agent_message_chunk' and update.get('content', {}).get('type') == 'text':
+                sys.stdout.write(update['content']['text'])
+                sys.stdout.flush()
+            elif kind == 'tool_call':
+                print(f"[tool] {update.get('title') or update.get('kind') or update.get('toolCallId')}", file=sys.stderr)
+        return message
+
+    try:
+        call('initialize', {'protocolVersion': 1, 'clientInfo': {'name': 'agy-acp', 'version': '1'},
+                            'clientCapabilities': {'fs': {'readTextFile': False, 'writeTextFile': False}, 'terminal': False}})
+        call('authenticate', {'methodId': 'gemini-api-key'})
+        servers = [{'name': 'carapa-board', 'type': 'http', 'headers': [],
+                    'url': f"{base.rsplit('/', 1)[0]}/mcp-relay/mcp/carapa-board"}] if args.mcp else []
+        session = call('session/new', {'cwd': args.cwd, 'mcpServers': servers})
+        if args.list_models:
+            models = (session.get('models') or {}).get('availableModels') or []
+            options = [o for c in session.get('configOptions') or [] if c.get('id') == 'model' for o in c.get('options', [])]
+            for m in models or options:
+                print(m.get('modelId') or m.get('value') or m.get('id'))
+            return 0
+        sid = session['sessionId']
+        if args.model:
+            call('session/set_config_option', {'sessionId': sid, 'configId': 'model', 'value': args.model})
+        result = call('session/prompt', {'sessionId': sid, 'prompt': [{'type': 'text', 'text': args.prompt}]})
+        print()
+        if result.get('stopReason') not in (None, 'end_turn'):
+            print(f"[stopped: {result['stopReason']}]", file=sys.stderr)
+    except KeyboardInterrupt:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)  # a second Ctrl-C must not interrupt the cleanup
+        print('\nagy-acp: interrupted', file=sys.stderr)
+        status = 130
+    except RuntimeError as error:
+        print(f'agy-acp: {error}', file=sys.stderr)
+        status = 1
+    finally:
+        proc.terminate()
+    return status
+
+
+if __name__ == '__main__':
+    sys.exit(main())

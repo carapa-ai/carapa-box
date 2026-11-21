@@ -1,0 +1,283 @@
+# Shared egress proxy — all stacks route outbound traffic through here.
+# Start this before any agent/service stack: both networks must exist first.
+#
+# Images: DHI (Docker Hardened Images) with digest pinning.
+# Run before-start.sh to build images and scan for CVEs before starting.
+#
+# Operator-only deployment: copy this file into a private directory outside
+# every sandbox mount with its .env, before-start.sh, squid.conf,
+# squid-entrypoint.sh, tool_profiles.jsonc and policy.rego, then set
+# EGRESS_SOURCE_DIR to this checkout directory (code, build contexts) and
+# EGRESS_CONFIG_DIR to the private directory (host paths). See
+# docs/installation-data.md.
+
+services:
+  squid:
+    build:
+      context: ${EGRESS_SOURCE_DIR:-.}
+      dockerfile: Dockerfile.squid
+    image: carapa/egress-proxy-squid:latest
+    labels:
+      carapa.egress.definition-hash: "${EGRESS_DEFINITION_HASH_SQUID:-}"
+    entrypoint: [ "/bin/sh", "/etc/squid/entrypoint.sh" ]
+    restart: unless-stopped
+    stop_grace_period: 5s
+    security_opt:
+      # NOTE: no-new-privileges omitted — squid starts as root then drops to
+      # the 'proxy' user, which requires a setuid/setgid privilege transition.
+      - seccomp:../security/seccomp-proxy.json
+      - apparmor=carapabox-proxy
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN # chown log files to proxy:proxy
+      - DAC_OVERRIDE # sed -i on squid.conf, write to /var/log/squid
+      - SETUID # drop to proxy user
+      - SETGID # drop to proxy group
+      - NET_BIND_SERVICE # bind port 3128
+      - NET_RAW
+    networks:
+      - egress_proxy
+      - agent_egress
+      - hostaccess
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,noexec,nosuid,nodev,uid=65532,gid=65532
+      - /var/log/squid:size=32M,nosuid,nodev,uid=65532,gid=65532
+      - /var/spool/squid:size=128M,nosuid,nodev,uid=65532,gid=65532
+      - /run:size=8M,nosuid,nodev,uid=65532,gid=65532
+    volumes:
+      - ${EGRESS_CONFIG_DIR:-${STACK_DIR:-.}}/squid.conf:/etc/squid/squid.conf.tpl:ro
+      - ${EGRESS_CONFIG_DIR:-${STACK_DIR:-.}}/squid-entrypoint.sh:/etc/squid/entrypoint.sh:ro
+      - ${CARAPA_BOX_STATE_HOST_DIR:-${STACK_DIR:-.}/../generated}/squid-generated.conf:/etc/squid/squid-generated.conf:ro
+    logging:
+      driver: ${LOG_DRIVER:-json-file}
+      options:
+        tag: "carapabox-squid"
+        #max-size: "20m"
+        #max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+          pids: 100
+
+  # HTTP relay — injects API credentials and forwards to upstream providers via squid
+  api-relay:
+    build:
+      context: ${EGRESS_SOURCE_DIR:-.}
+      dockerfile: Dockerfile.api-relay
+    image: carapa/egress-proxy-api-relay:latest
+    labels:
+      carapa.egress.code-hash: "${EGRESS_CODE_HASH_API_RELAY:-}"
+      carapa.egress.definition-hash: "${EGRESS_DEFINITION_HASH_API_RELAY:-}"
+    user: "${RELAY_UID:-1000}:${RELAY_GID:-1000}"
+    restart: unless-stopped
+    # SIGTERM starts a graceful drain (waits for in-flight requests, capped by
+    # RELAY_DRAIN_TIMEOUT_MS = 15 min). Keep Docker's SIGKILL just above that cap
+    # so a restart/recreate never cuts an active LLM stream.
+    stop_grace_period: 16m
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:../security/seccomp-proxy.json
+      - apparmor=carapabox-proxy
+    cap_drop:
+      - ALL
+    sysctls:
+      # Let the non-root (uid 1000) relay bind :443 for the SNI passthrough
+      # bridge (agy's proxy-ignoring Google direct-dials tunnel through here →
+      # squid). cap_add NET_BIND_SERVICE is unreliable for a non-root process
+      # (Docker doesn't set ambient caps), so use the namespaced sysctl instead —
+      # keeps cap_drop: ALL fully intact. Confined to THIS container, so agent
+      # sandboxes need no port relaxation at all. Only opens 443-1023.
+      - net.ipv4.ip_unprivileged_port_start=443
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,noexec,nosuid,nodev
+    networks:
+      - egress_proxy
+      - agent_egress
+      - hostaccess
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8880:8080" # 127.0.0.1:8880 → api-relay:8080
+    env_file:
+      - path: ./.env
+    environment:
+      # Upstream provider calls leave through squid (required by api-relay.mjs).
+      - HTTP_PROXY=${HTTP_PROXY:-http://squid:3128}
+      - PROVIDER_ACCOUNTS_DIR=${PROVIDER_ACCOUNTS_DIR:+/app/provider-accounts}
+      # Gemini OAuth not supported via relay — see docs/api-relay-setup.md
+      - RATE_LIMIT_PER_CLIENT=${RATE_LIMIT_PER_CLIENT:-}
+      - RATE_LIMIT_GLOBAL=${RATE_LIMIT_GLOBAL:-}
+      - RATE_LIMIT_WINDOW_S=${RATE_LIMIT_WINDOW_S:-}
+      - SECRETS_DIR=/run/secrets
+      # carapa-box base URL for per-sandbox token pulls (default: host gateway).
+      - CARAPA_BOX_URL=${CARAPA_BOX_URL:-}
+      # Board upstream used by relay-clients/carapa-bot.json (mcp-relay, board-api).
+      - CARAPA_BOARD_HOST=${CARAPA_BOARD_HOST:-}
+      - CARAPA_BOARD_PORT=${CARAPA_BOARD_PORT:-}
+      - CARAPA_BOARD_PROTOCOL=${CARAPA_BOARD_PROTOCOL:-}
+      # Multi-host relay. Hub: RELAY_FORWARDER_PORT (+ optional TLS cert/key and a
+      # published port) accepts signed requests from box forwarders; Board is
+      # asked for each box's policy with CARAPA_RELAY_HUB_SECRET. Box:
+      # RELAY_MODE=forward sends every request to CARAPA_RELAY_UPSTREAM.
+      - RELAY_MODE=${RELAY_MODE:-}
+      - CARAPA_RELAY_UPSTREAM=${CARAPA_RELAY_UPSTREAM:-}
+      - CARAPA_RELAY_UPSTREAM_INSECURE=${CARAPA_RELAY_UPSTREAM_INSECURE:-}
+      - CARAPA_BOX_ID=${CARAPA_BOX_ID:-}
+      - RELAY_FORWARDER_PORT=${RELAY_FORWARDER_PORT:-}
+      - RELAY_FORWARDER_TLS_CERT=${RELAY_FORWARDER_TLS_CERT:-}
+      - RELAY_FORWARDER_TLS_KEY=${RELAY_FORWARDER_TLS_KEY:-}
+      - CARAPA_BOARD_URL=${CARAPA_BOARD_URL:-}
+    volumes:
+      # The whole code directory, not single files: a file bind mount keeps the
+      # inode it was created with, so a file replaced by git would stay stale
+      # through an in-place reload (SIGHUP).
+      - ${EGRESS_SOURCE_DIR:-${STACK_DIR:-.}}/api-relay:/app/api-relay:ro
+      - ${PROVIDER_ACCOUNTS_DIR:-/dev/null}:/app/provider-accounts:rw
+      - ${RELAY_CLIENTS_DIR:-${EGRESS_SOURCE_DIR:-${STACK_DIR:-.}}}/relay-clients:/app/relay-clients:ro
+      # Same generated file squid enforces; the SNI bridge refuses its relay_allowed hosts
+      # and fails closed when the file is unreadable. carapa-box rewrites it in place.
+      - ${CARAPA_BOX_STATE_HOST_DIR:-${STACK_DIR:-.}/../generated}/squid-generated.conf:/app/squid-generated.conf:ro
+      #- ${OAUTH_CLIENT_CREDENTIALS_DIR:-/dev/null}:/app/credentials/clients:rw
+    secrets:
+      - anthropic_api_key
+      - openai_api_key
+      - google_api_key
+      - gitlab_pat
+      - openrouter_api_key
+      - nvidia_api_key
+      - mistral_api_key
+      - mistral_vibe_api_key
+      - carapa_box_api_token
+      - carapa_wa_link_token
+      - carapa_mail_token
+    logging:
+      driver: ${LOG_DRIVER:-json-file}
+      options:
+        tag: "carapabox-relay"
+        #max-size: "20m"
+        #max-file: "3"
+    depends_on:
+      - squid
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+          pids: 100
+
+  # HTTP forwarder for local LLM (llama.cpp/Ollama on host) — forwards 3001,
+  # 8881 + 11434. Port 3001 injects the FreeLLMAPI credential.
+  # For a plain socat passthrough (no transform), use docker-compose-socat.yml.
+  llama-proxy:
+    build:
+      context: ${EGRESS_SOURCE_DIR:-.}
+      dockerfile: Dockerfile.llama-proxy
+    image: carapa/egress-proxy-llama-proxy:latest
+    labels:
+      carapa.egress.code-hash: "${EGRESS_CODE_HASH_LLAMA_PROXY:-}"
+      carapa.egress.definition-hash: "${EGRESS_DEFINITION_HASH_LLAMA_PROXY:-}"
+    # SIGTERM starts a graceful drain (waits for in-flight requests, capped by
+    # RELAY_DRAIN_TIMEOUT_MS = 15 min). Keep Docker's SIGKILL just above that cap
+    # so a restart/recreate never cuts an active LLM stream.
+    stop_grace_period: 16m
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:../security/seccomp-proxy.json
+      - apparmor=carapabox-proxy
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16M,noexec,nosuid,nodev,uid=65532,gid=65532
+    volumes:
+      - ${EGRESS_SOURCE_DIR:-${STACK_DIR:-.}}/llama-proxy.mjs:/app/llama-proxy.mjs:ro
+      # captures/ is bound rw but only written when LLAMA_DEBUG is truthy.
+      # Mounted under /app/** because the shared carapabox-proxy apparmor
+      # profile only allow-lists /app, /tmp, /var/log, /run for writes —
+      # /captures at the root would EACCES even with chmod 777 on the host.
+      - ${EGRESS_SOURCE_DIR:-.}/captures:/app/captures:rw
+      # Profile-keyed tool stripping. SIGHUP the container to reload after edits.
+      - ${EGRESS_CONFIG_DIR:-.}/tool_profiles.jsonc:/app/tool_profiles.jsonc:ro
+    environment:
+      PORTS: "3001,8881,11434,12434"
+      UPSTREAM_HOST: "host.docker.internal"
+      LLAMA_DEBUG: ${LLAMA_DEBUG:-false}
+      CAPTURE_DIR: "/app/captures"
+      TOOL_PROFILES_PATH: "/app/tool_profiles.jsonc"
+      # LOG_REQUESTS: "1"   # uncomment for per-request log lines (debug mode logs anyway)
+    restart: unless-stopped
+    networks:
+      - egress_proxy
+      - agent_egress
+      - hostaccess
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      # Host-run CarapaBoard reaches llama-proxy here (host llama.cpp keeps :8881).
+      - "127.0.0.1:9881:8881"
+      - "127.0.0.1:11435:11434"
+      - "127.0.0.1:9888:3001"
+      - "127.0.0.1:12435:12434"
+    secrets:
+      - freellmapi_key
+    logging:
+      driver: ${LOG_DRIVER:-json-file}
+      options:
+        tag: "carapabox-llama"
+        #max-size: "10m"
+        #max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+          pids: 50
+
+networks:
+  egress_proxy:
+    driver: bridge
+    internal: true # No internet — services (mail, wa-link) reach squid/api-relay here
+    name: egress_proxy
+  agent_egress:
+    driver: bridge
+    internal: true # Shared network for services (mail, wa-link). Agents use per-instance agent_egress_{project} networks instead
+    name: agent_egress
+    ipam:
+      config:
+        - subnet: 172.26.0.0/24
+  hostaccess:
+    driver: bridge
+    name: egress_hostaccess
+
+# File-based secrets — mounted at /run/secrets/<name> (tmpfs, not in docker inspect).
+# Create secrets/ dir with one file per secret. Falls back to env vars if file missing.
+secrets:
+  anthropic_api_key:
+    file: ${SECRETS_DIR}/anthropic_api_key
+  openai_api_key:
+    file: ${SECRETS_DIR}/openai_api_key
+  google_api_key:
+    file: ${SECRETS_DIR}/google_api_key
+  gitlab_pat:
+    file: ${SECRETS_DIR}/gitlab_pat
+  carapa_box_api_token:
+    file: ${SECRETS_DIR}/carapa_box_api_token
+  carapa_wa_link_token:
+    file: ${SECRETS_DIR}/carapa_wa_link_token
+  carapa_mail_token:
+    file: ${SECRETS_DIR}/carapa_mail_token
+  openrouter_api_key:
+    file: ${SECRETS_DIR}/openrouter_api_key
+  nvidia_api_key:
+    file: ${SECRETS_DIR}/nvidia_api_key
+  mistral_api_key:
+    file: ${SECRETS_DIR}/mistral_api_key
+  mistral_vibe_api_key:
+    file: ${SECRETS_DIR}/mistral_vibe_api_key
+  freellmapi_key:
+    file: ${SECRETS_DIR}/freellmapi_key

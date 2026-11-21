@@ -1,0 +1,123 @@
+# syntax=docker/dockerfile:1
+# Alternative public runtime using CarapaBox's DHI Alpine 3.23 family.
+# Bun's apk claims cmd:node, so keep Node as the package-managed base and copy
+# the controller's exact Bun binary. Harnesses live in separate musl volumes.
+FROM dhi.io/bun:1.4.2-alpine3.23-dev@sha256:bbb258f21b4a1bc7fcc235a93b26d4097d240928ba245f0cafa7e67803dbc731 AS bun-runtime
+FROM dhi.io/node:26-alpine3.23-dev@sha256:1fb4a2757c11fc174d3118363d01d7a7cdcd2b96544083c2a372e12d175bc754 AS carapa-bot-runtime
+USER 0
+
+# DHI omits Alpine's audio group; PulseAudio's package hook requires it even
+# though managed browsers use private null sinks, never hardware sound devices.
+RUN addgroup -S audio && apk upgrade --no-cache && apk add --no-cache \
+    bash git jq curl wget python3 py3-pip ripgrep ca-certificates procps coreutils \
+    shadow dropbear openssh-client openssh-sftp-server util-linux mc htop socat \
+    gzip unzip tar tmux bubblewrap chromium nss-tools build-base nodejs npm \
+    pulseaudio pulseaudio-utils xvfb font-opensans ast-grep
+
+ARG NPM_VERSION=12.0.2
+RUN npm install --global --prefix /opt/npm "npm@${NPM_VERSION}" \
+    && mkdir -p /usr/local/bin \
+    && ln -sf /opt/npm/bin/npm /usr/local/bin/npm \
+    && ln -sf /opt/npm/bin/npx /usr/local/bin/npx \
+    && test "$(/opt/npm/bin/npm --version)" = "${NPM_VERSION}"
+
+# npm 12.0.2 still bundles vulnerable releases of these dependencies. Update
+# them within their supported major versions until npm ships patched bundles.
+# Remove build-only metadata: npm's unpublished docs workspace prevents npm
+# from resolving its installed runtime tree, even with --omit=dev.
+RUN node -e 'const fs=require("fs"),p="/opt/npm/lib/node_modules/npm/package.json",j=JSON.parse(fs.readFileSync(p)); delete j.devDependencies; delete j.workspaces; j.carapaRuntimePatches="Bundled dependencies updated by CarapaBot; see Dockerfile"; fs.writeFileSync(p,JSON.stringify(j,null,2)+"\n")' \
+    && /opt/npm/bin/npm install --prefix /opt/npm/lib/node_modules/npm \
+       --omit=dev --ignore-scripts --no-audit --no-fund --package-lock=false --save-exact \
+       brace-expansion@5.0.11 ip-address@10.3.1 tar@7.5.21 undici@6.29.1 \
+    && /opt/npm/bin/npm cache clean --force
+
+# Yarn is workspace package-manager tooling, not a volume-installed harness.
+ARG YARN_VERSION=1.22.22
+RUN /opt/npm/bin/npm install --global --prefix /opt/yarn --no-fund --no-audit \
+      "yarn@${YARN_VERSION}" \
+    && ln -sf /opt/yarn/bin/yarn /usr/local/bin/yarn \
+    && ln -sf /opt/yarn/bin/yarnpkg /usr/local/bin/yarnpkg \
+    && test "$(/opt/yarn/bin/yarn --version)" = "${YARN_VERSION}"
+
+COPY --from=bun-runtime /usr/bin/bun /usr/local/bin/bun
+
+# Immutable control-plane baseline. Deployments may overlay newer, host-owned
+# tools at /usr/local/stack-cli-bin without hiding this rollback copy.
+COPY --chmod=755 bin/ /usr/local/ai-cli-bin/
+
+# ── Playwright CLI backend + Chromium ────────────────────────────────────
+# The image-owned bin/playwright-cli wrapper depends on the open/goto flag surface.
+# Its final-image smoke check must catch an incompatible upstream release.
+# Alpine splits CPU WebGL rendering out of the main Chromium package. The
+# sandbox has no hardware GPU, so 3D previews require this matching subpackage.
+RUN apk add --no-cache ffmpeg chromium-swiftshader \
+  && mkdir -p /opt/google/chrome \
+  && ln -s /usr/bin/chromium /opt/google/chrome/chrome
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/carapa-harness/harnesses/playwright/browsers
+ENV CHROME_BIN=/usr/bin/chromium
+ENV CHROMIUM_PATH=/usr/bin/chromium
+
+# Preserve the base image's non-root UID/GID while using CarapaBot's home/name.
+RUN groupmod -n ubuntu node \
+    && usermod -l ubuntu -d /home/ubuntu -m -s /bin/bash node
+
+# The hardened base omits /etc/shells. Dropbear checks getusershell() before
+# public-key authentication and otherwise rejects ubuntu's /bin/bash shell.
+RUN printf '/bin/sh\n/bin/bash\n/usr/bin/sh\n/usr/bin/bash\n' > /etc/shells \
+  && chmod 644 /etc/shells
+
+ENV BUN_INSTALL="/opt/bun"
+RUN mkdir -p /opt/bun/bin && ln -s "$(command -v bun)" /opt/bun/bin/bun
+ENV PATH="/usr/local/stack-cli-bin:/usr/local/ai-cli-bin:/opt/carapa-harness/bin:/opt/carapa-harness/venv/bin:/opt/bun/bin:/home/ubuntu/.local/bin:$PATH"
+ENV PRIME_AGENT_KERNEL_PYTHON="/opt/carapa-harness/harnesses/prime-agent/venv/bin/python" \
+  PI_SKIP_VERSION_CHECK="1" \
+  OMP_SKIP_SETUP="1"
+
+# Login shells may replace PATH. Stable compatibility links keep the historical
+# command locations while their targets are replaced with the harness payload.
+RUN mkdir -p /usr/local/bin \
+  && for command in claude codex opencode pi cursor-agent agent \
+  hermes hermes-agent hermes-acp prime-agent omp; do \
+  ln -sf "/opt/carapa-harness/bin/$command" "/usr/local/bin/$command"; \
+  done
+
+WORKDIR /home/ubuntu
+
+# Security hardening: strip SUID/SGID bits from all binaries
+RUN find / -xdev -perm -4000 -exec chmod u-s {} + 2>/dev/null; \
+  find / -xdev -perm -2000 -exec chmod g-s {} + 2>/dev/null; \
+  true
+
+# Non-root PTY support requires Dropbear 2024.84 or newer.
+RUN test "$(apk version -t "$(apk list --installed dropbear | cut -d' ' -f1 | sed 's/^dropbear-//;s/-r[0-9]*$//')" 2024.84)" != "<"
+
+COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN install -d -m 755 /usr/local/share/carapa
+COPY --chmod=644 pi-models.json /usr/local/share/carapa/pi-models.json
+COPY --chmod=644 prime-models.json /usr/local/share/carapa/prime-models.json
+COPY --chmod=644 prime-settings.json /usr/local/share/carapa/prime-settings.json
+COPY --chmod=644 omp-models.json /usr/local/share/carapa/omp-models.json
+COPY --chmod=644 omp-settings.json /usr/local/share/carapa/omp-settings.json
+COPY --chmod=644 omp-lsp.json /usr/local/share/carapa/omp-lsp.json
+
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash", "-l"]
+
+# Installer code is shipped with the runtime, but never runs at agent startup.
+ARG CARAPA_BOT_VERSION=0.1.0
+LABEL org.opencontainers.image.title="carapa-bot" \
+    org.opencontainers.image.version="${CARAPA_BOT_VERSION}-alpine" \
+    ai.carapa.harness-layout="1" \
+    ai.carapa.harness-store-layout="1"
+COPY --chmod=755 harness/install.py harness/verify.py install-antigravity-acp.sh /usr/local/lib/carapa-harness/
+RUN mkdir -p /opt/carapa-harness /usr/local/share/carapa \
+    && python3 -c 'import json,platform,sys,subprocess; json.dump({"layout": 1, "arch": platform.machine(), "python": list(sys.version_info[:2]), "node": subprocess.check_output(["node", "-p", "process.versions.node.match(/^[0-9]+/)[0]"], text=True).strip(), "libc": ["musl", subprocess.check_output(["apk", "list", "--installed", "musl"], text=True).split()[0].removeprefix("musl-")]}, open("/usr/local/share/carapa/harness-abi.json", "w"))'
+
+# CarapaBot's license applies to its own software. Third-party components keep
+# their upstream licenses and notices; this image is not wholly Apache-licensed.
+COPY --chmod=644 LICENSE THIRD-PARTY-NOTICES.md /usr/share/licenses/carapa-bot/
+COPY --chmod=644 licenses/Apache-2.0 licenses/Bun-LICENSE /usr/share/licenses/carapa-bot/
+RUN chmod 755 /usr/share/licenses /usr/share/licenses/carapa-bot
+USER ubuntu

@@ -1,0 +1,15 @@
+{
+  "setupVersion": 2,
+  "startup": { "setupWizard": false },
+  "modelProviderOrder": ["carapa-llama", "carapa-codex", "carapa-ollama", "carapa-vllm", "carapa-freellmapi", "carapa-openrouter", "carapa-nvidia"],
+  "enabledModels": [
+    "carapa-llama/default", "carapa-llama/qwen3.8", "carapa-llama/coder", "carapa-llama/research", "carapa-llama/memory", "carapa-llama/tester",
+    "carapa-ollama/coder", "carapa-ollama/minimax-m3:cloud", "carapa-ollama/glm-5.2:cloud", "carapa-ollama/gemma4-12B-256k", "carapa-ollama/gemma4:e4b", "carapa-ollama/gemma4:e2b", "carapa-ollama/ornith:35b-256k", "carapa-ollama/ornith:9b-256k",
+    "carapa-vllm/qwen3.8", "carapa-freellmapi/auto",
+    "carapa-codex/gpt-6.2-sol", "carapa-codex/gpt-6.2-astra", "carapa-codex/gpt-6.1-sol", "carapa-codex/gpt-6.1-terra", "carapa-codex/gpt-6-astra", "carapa-codex/gpt-6-luna",
+    "carapa-openrouter/nvidia/nemotron-3-super-120b-a12b:free", "carapa-openrouter/google/gemma-4-31b-it:free",
+    "carapa-openrouter/deepseek/deepseek-v4.1-flash", "carapa-openrouter/xiaomi/mimo-v2.6-flash", "carapa-openrouter/z-ai/glm-5.3-flash", "carapa-openrouter/minimax/minimax-m3.1-flash",
+    "carapa-nvidia/google/diffusiongemma-26b-a4b-it", "carapa-nvidia/nvidia/nemotron-3-ultra-550b-a55b", "carapa-nvidia/stepfun-ai/step-3.7-flash"
+  ],
+  "modelRoles": { "default": "carapa-llama/qwen3.8", "smol": "carapa-llama/qwen3.8", "slow": "carapa-codex/gpt-6.1-sol" }
+}

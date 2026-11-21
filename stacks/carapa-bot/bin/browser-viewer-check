@@ -1,0 +1,253 @@
+#!/usr/bin/env node
+'use strict';
+// Disposable integration probe: two run-owned browsers, live input and detach
+// during recording. Optional URL is visited read-only (e.g. http://nginx:8081/).
+const fs = require('node:fs');
+const path = require('node:path');
+const http = require('node:http');
+const { spawn, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const { once } = require('node:events');
+const assert = require('node:assert/strict');
+const exec = promisify(execFile);
+const result = output => JSON.parse(output.match(/### Result\n([\s\S]*?)(?=\n###|$)/)[1]);
+const root = fs.mkdtempSync('/tmp/carapa-browser-check-');
+const runs = [];
+const viewers = [];
+const server = http.createServer((req, res) => {
+  res.setHeader('Content-Type', 'text/html');
+  res.end(`<html><head><title>${req.url}</title></head><body><h1>${req.url}</h1><input id="input"><button onclick="document.querySelector('h1').textContent='clicked'">Change</button><select id="choice" style="display:block;width:220px;font:20px sans-serif;background:rgb(250,0,150)" onchange="document.body.dataset.choice=this.value"><option>Alpha</option><option>Beta</option><option disabled>Disabled</option><option>Gamma</option></select></body></html>`);
+});
+const cli = path.join(__dirname, 'playwright-cli');
+const config = path.join(root, 'config.json');
+fs.writeFileSync(config, JSON.stringify({ browser: { browserName: 'chromium', launchOptions: {
+  executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', headless: true,
+  args: ['--no-sandbox', '--disable-dev-shm-usage'],
+} } }));
+function createRun(index) {
+  const id = `browser-check-${Date.now()}-${index}`;
+  const dir = path.join('/workspace/ipc/runs', id);
+  const session = id;
+  const env = { CARAPA_BROWSER_RUN_ID: id, PLAYWRIGHT_CLI_SESSION: session,
+    PLAYWRIGHT_DAEMON_SESSION_DIR: `/tmp/pwcli-${id}`,
+    PLAYWRIGHT_DAEMON_SOCKETS_DIR: `/tmp/pwcli-${id}/sockets`,
+    CARAPA_RECORD: index === 1 ? '1' : '0', CARAPA_RECORD_SESSION: session,
+    CARAPA_RECORD_DAEMON_DIR: `/tmp/pwcli-${id}`, CARAPA_RECORD_SOCKETS_DIR: `/tmp/pwcli-${id}/sockets`,
+    CARAPA_RECORD_DIR: path.join(dir, 'recordings') };
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'args.json'), JSON.stringify({ env, workDir: root }));
+  const run = { id, dir, env };
+  runs.push(run);
+  return run;
+}
+async function command(run, ...args) {
+  const env = { ...process.env, ...run.env };
+  delete env.CARAPA_BROWSER_CONTEXT_FILE;
+  const result = await exec(process.execPath, [cli, ...args], { env, cwd: root, timeout: 30_000, maxBuffer: 2 * 1024 * 1024 });
+  assert(!result.stdout.includes('### Error'), result.stdout);
+  return result.stdout;
+}
+function attach(run) {
+  const proc = spawn(process.execPath, [path.join(__dirname, 'browser-viewer'), run.id], { stdio: ['pipe', 'pipe', 'pipe'] });
+  viewers.push(proc);
+  let pending = '';
+  const events = [];
+  const waiters = new Set();
+  proc.stdout.setEncoding('utf8');
+  proc.stdout.on('data', chunk => {
+    pending += chunk;
+    let pos;
+    while ((pos = pending.indexOf('\n')) !== -1) {
+      const event = JSON.parse(pending.slice(0, pos)); pending = pending.slice(pos + 1);
+      if (event.type === 'message') event.message = JSON.parse(event.data);
+      events.push(event);
+      for (const poll of waiters) poll();
+    }
+  });
+  let stderr = '';
+  proc.stderr.on('data', data => { stderr += data.toString().slice(0, 2000); });
+  const wait = (predicate, timeout = 25_000) => new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => { waiters.delete(poll); reject(new Error(`Viewer event timeout: ${JSON.stringify(events.filter(e => e.type !== 'message' || e.message?.method !== 'frame').map(e => e.type === 'message' ? {method: e.message.method, params: e.message.method === 'sessions' ? e.message.params.sessions.map(s => s.title) : e.message.params} : e)).slice(-3000)} ${stderr}`)); }, timeout);
+    const poll = () => {
+      const error = events.find(event => event.type === 'error');
+      const found = events.find(predicate);
+      if (error || found) { clearTimeout(deadline); waiters.delete(poll); error ? reject(new Error(error.error)) : resolve(found); }
+    };
+    waiters.add(poll); poll();
+  });
+  let nextId = 0;
+  const send = async (method, params = {}, expectError = false) => {
+    const id = ++nextId;
+    proc.stdin.write(JSON.stringify({ id, method, params }) + '\n');
+    const response = (await wait(event => event.message?.id === id)).message;
+    if (!expectError) assert(!response.error, `${method}: ${response.error}`);
+    return response;
+  };
+  return { proc, wait, send, events };
+}
+function jpegDimensions(base64) {
+  const data = Buffer.from(base64, 'base64');
+  assert.equal(data.subarray(0, 2).toString('hex'), 'ffd8', 'Frame must be JPEG');
+  let offset = 2;
+  while (offset + 9 < data.length) {
+    if (data[offset] !== 0xff) { offset++; continue; }
+    const marker = data[offset + 1];
+    offset += 2;
+    if (marker === 0xd8 || marker === 0xd9) continue;
+    const length = data.readUInt16BE(offset);
+    if (marker >= 0xc0 && marker <= 0xc3)
+      return { width: data.readUInt16BE(offset + 5), height: data.readUInt16BE(offset + 3) };
+    offset += length;
+  }
+  throw new Error('JPEG dimensions not found');
+}
+(async () => {
+  const start = Date.now();
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const first = createRun(1);
+  const second = createRun(2);
+  await command(first, 'open', `${base}/first`, `--config=${config}`);
+  await command(second, 'open', `${base}/second`, `--config=${config}`);
+  await command(first, 'tab-new', `${base}/agent-current`);
+  const viewer = attach(first);
+  await viewer.wait(event => event.type === 'ready');
+  const sessions = await viewer.wait(event => event.message?.method === 'sessions' && event.message.params.sessions.length);
+  assert.equal(sessions.message.params.sessions.length, 1, 'A viewer must discover only its own run');
+  assert.equal(sessions.message.params.sessions[0].title, first.id);
+  const tabs = await viewer.wait(event => event.message?.method === 'tabs' && event.message.params.tabs.length);
+  await viewer.wait(event => event.message?.method === 'tabs' && event.message.params.tabs.some(tab => tab.selected && tab.url === `${base}/agent-current`));
+  let mark = viewer.events.length;
+  await viewer.send('selectTab', tabs.message.params.tabs[0]);
+  assert.equal(result(await command(first, 'eval', '() => location.href')), `${base}/first`, 'Viewer selection must select the agent tab');
+  await command(first, 'tab-select', '1');
+  await viewer.wait(event => viewer.events.indexOf(event) >= mark && event.message?.method === 'tabs' && event.message.params.tabs.some(tab => tab.selected && tab.url === `${base}/agent-current`));
+  mark = viewer.events.length;
+  await command(first, 'tab-close', '1');
+  await viewer.wait(event => viewer.events.indexOf(event) >= mark && event.message?.method === 'tabs' && event.message.params.tabs.length === 1 && event.message.params.tabs[0].selected);
+  await viewer.wait(event => event.message?.method === 'frame');
+  const sound = await viewer.wait(event => event.message?.method === 'audioStatus');
+  assert(sound.message.params.available, sound.message.params.error);
+  const quietViewer = attach(second);
+  await quietViewer.wait(event => event.message?.method === 'audioStatus');
+  assert(!(await viewer.send('setAudio', { enabled: true })).error);
+  assert(!(await quietViewer.send('setAudio', { enabled: true })).error);
+  await command(first, 'run-code', `async page => {
+    await page.evaluate(() => document.querySelector('button').addEventListener('click', () => {
+      window.tone = new AudioContext();
+      const oscillator = tone.createOscillator();
+      oscillator.connect(tone.destination); oscillator.start();
+    }, { once: true }));
+    await page.locator('button').click();
+  }`);
+  const audioPackets = instance => instance.events.filter(event => event.message?.method === 'audio');
+  const audible = event => {
+    if (event.message?.method !== 'audio') return false;
+    const packet = event.message.params;
+    assert.equal(packet.sampleRate, 48000); assert.equal(packet.channels, 2);
+    const bytes = Buffer.from(packet.data, 'base64');
+    assert.equal(bytes.length, 7680);
+    for (let offset = 0; offset < bytes.length; offset += 2)
+      if (Math.abs(bytes.readInt16LE(offset)) > 100) return true;
+    return false;
+  };
+  await viewer.wait(audible);
+  await quietViewer.wait(() => audioPackets(quietViewer).length >= 3);
+  assert(!audioPackets(quietViewer).some(audible), 'Sound leaked into another browser context');
+  assert(!(await viewer.send('setAudio', { enabled: false })).error);
+  assert(!(await quietViewer.send('setAudio', { enabled: false })).error);
+  const packetsBeforeMute = audioPackets(viewer).length;
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(audioPackets(viewer).length, packetsBeforeMute, 'Muted viewer continued capturing sound');
+  const quietClosed = once(quietViewer.proc, 'exit'); quietViewer.proc.stdin.end(); await quietClosed;
+  assert.equal((await viewer.send('stopRecording', {}, true)).error, 'This action is managed by CarapaBoard');
+  assert(!(await viewer.send('navigate', { url: `${base}/shared-input` })).error);
+  assert((await command(first, 'eval', '() => document.title')).includes('/shared-input'));
+  assert((await command(second, 'eval', '() => document.title')).includes('/second'));
+  assert(!(await viewer.send('resize', { width: 390, height: 844 })).error);
+  assert((await command(first, 'run-code', 'async page => page.viewportSize()')).includes('390'));
+  const resizedFrame = await viewer.wait(event => {
+    if (event.message?.method !== 'frame' || event.message.params.viewportWidth !== 390 ||
+        event.message.params.viewportHeight !== 844) return false;
+    const size = jpegDimensions(event.message.params.data);
+    // A frame queued before the capture restart can have the new viewport
+    // metadata but the old recording resolution. Wait for the new capture.
+    return size.width === 390 && size.height === 844;
+  });
+  assert.deepEqual(jpegDimensions(resizedFrame.message.params.data), { width: 390, height: 844 },
+    'A resized viewer must stream native-resolution frames');
+  // Mouse and keyboard input must affect the same document the agent sees.
+  const inputRect = JSON.parse((await command(first, 'eval', '() => { const r=document.querySelector("input").getBoundingClientRect(); return {x:r.x+5,y:r.y+5}; }')).match(/### Result\n([\s\S]*?)(?=\n###|$)/)[1]);
+  await viewer.send('mousedown', inputRect); await viewer.send('mouseup', inputRect);
+  await viewer.send('keydown', {key:'a'}); await viewer.send('keyup', {key:'a'});
+  assert((await command(first, 'eval', '() => document.querySelector("input").value')).includes('"a"'));
+  const buttonRect = JSON.parse((await command(first, 'eval', '() => { const r=document.querySelector("button").getBoundingClientRect(); return {x:r.x+5,y:r.y+5}; }')).match(/### Result\n([\s\S]*?)(?=\n###|$)/)[1]);
+  await viewer.send('mousedown', buttonRect); await viewer.send('mouseup', buttonRect);
+  assert((await command(first, 'eval', '() => document.querySelector("h1").textContent')).includes('clicked'));
+  // Exercise the deployed adapter, not a locally imported fork controller.
+  const choice = result(await command(first, 'eval', '() => { const r=document.querySelector("#choice").getBoundingClientRect(); return {x:r.x+5,y:r.y+5,bottom:r.bottom}; }'));
+  await viewer.send('mousedown', choice); await viewer.send('mouseup', choice);
+  const option = result(await command(first, 'run-code', `async page => {
+    const menu=page.locator('select[size]'); await menu.waitFor({state:'visible'});
+    const r=await menu.locator('option').nth(1).boundingBox();
+    return {x:r.x+5,y:r.y+5};
+  }`));
+  const capture = await viewer.send('screenshot');
+  assert(!capture.error && capture.result?.data, 'Viewer screenshot must succeed with an open dropdown');
+  const paintedPixels = result(await command(first, 'run-code', `async page => page.evaluate(async ({data,bottom}) => {
+    const image=new Image(); image.src='data:image/png;base64,'+data; await image.decode();
+    const canvas=document.createElement('canvas'); canvas.width=image.width; canvas.height=image.height;
+    const ctx=canvas.getContext('2d'); ctx.drawImage(image,0,0);
+    const pixels=ctx.getImageData(0,Math.ceil(bottom+3),canvas.width,canvas.height-Math.ceil(bottom+3)).data;
+    let count=0; for(let i=0;i<pixels.length;i+=4) if(pixels[i]>230 && pixels[i+1]<20 && pixels[i+2]>130 && pixels[i+2]<170) count++;
+    return count;
+  }, ${JSON.stringify({data:capture.result.data,bottom:choice.bottom})})`));
+  assert(paintedPixels > 1000, 'The captured dropdown must visibly paint its options below the original select');
+  await viewer.send('mousedown', option); await viewer.send('mouseup', option);
+  assert.equal(result(await command(first, 'eval', '() => document.body.dataset.choice')), 'Beta');
+  mark = viewer.events.length;
+  await viewer.send('newTab', tabs.message.params.tabs[0]);
+  assert.equal(result(await command(first, 'eval', '() => location.href')), 'about:blank', 'Viewer-created tabs must become the agent tab');
+  const multiple = await viewer.wait(event => viewer.events.indexOf(event) >= mark && event.message?.method === 'tabs' && event.message.params.tabs.length === 2);
+  await viewer.send('selectTab', tabs.message.params.tabs[0]);
+  await viewer.send('closeTab', multiple.message.params.tabs.find(tab => tab.page !== tabs.message.params.tabs[0].page));
+  const ended = once(viewer.proc, 'exit'); viewer.proc.stdin.end(); await ended;
+  assert((await command(first, 'eval', '() => document.title')).includes('/shared-input'), 'Detach must preserve the browser');
+  await command(first, 'tab-new', `${base}/reconnected-current`);
+  const reconnected = attach(first);
+  await reconnected.wait(event => event.message?.method === 'tabs' && event.message.params.tabs.some(tab => tab.selected && tab.url === `${base}/reconnected-current`));
+  await reconnected.wait(event => event.message?.method === 'frame');
+  if (process.argv[2]) {
+    assert(!(await reconnected.send('navigate', { url: process.argv[2] })).error);
+    assert((await command(first, 'eval', '() => location.href')).includes(process.argv[2]));
+    const navigation = JSON.parse((await command(first, 'eval', '() => ({status:performance.getEntriesByType("navigation")[0].responseStatus,title:document.title})')).match(/### Result\n([\s\S]*?)(?=\n###|$)/)[1]);
+    assert(navigation.status >= 200 && navigation.status < 400, `App returned HTTP ${navigation.status}: ${navigation.title}`);
+    console.log(JSON.stringify({ appStatus: navigation.status, appTitle: navigation.title }));
+  }
+  const closed = once(reconnected.proc, 'exit');
+  fs.writeFileSync(path.join(first.dir, 'exit_code'), '130');
+  await closed;
+  assert((await command(first, 'eval', '() => document.readyState')).includes('complete'), 'Ending a viewer must leave recording finalization to Board');
+  const env = { ...process.env, ...first.env }; delete env.CARAPA_BROWSER_CONTEXT_FILE;
+  await exec(path.join(__dirname, 'record-end.sh'), [first.env.PLAYWRIGHT_DAEMON_SESSION_DIR, first.id, first.id], { cwd: root, env, timeout: 30_000 });
+  const video = path.join(first.env.CARAPA_RECORD_DIR, 'session.webm');
+  assert(fs.statSync(video).size > 1000, 'Video must survive live viewing and detach');
+  assert.equal(fs.readFileSync(video).subarray(0, 4).toString('hex'), '1a45dfa3', 'Recording must be a WebM container');
+  const duration = await exec('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', video], { timeout: 5000 }).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  if (duration) assert(Number(duration.stdout.trim()) > 0);
+  await exec(process.execPath, [path.join(__dirname, 'browser-close'), first.id], { timeout: 20_000 });
+  assert((await command(second, 'eval', '() => document.title')).includes('/second'), 'Cleanup must preserve other active runs');
+  assert((await command(second, 'tab-close', '0')).includes('No open tabs.'));
+  await quietViewer.wait(event => event.message?.method === 'tabs' && event.message.params.tabs.length === 0);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(second.env.PLAYWRIGHT_DAEMON_SESSION_DIR, 'selected-tab.json'), 'utf8')),
+    { page: null, pages: [] }, 'Closing the last tab must not create another page');
+  console.log(JSON.stringify({ ok: true, checks: ['isolated concurrent runs', 'live frames', 'browser audio', 'audio isolation and mute', 'shared navigation', 'mouse and keyboard', 'visible dropdown screenshot', 'dropdown mouse selection and change event', 'shared agent/viewer tab selection', 'agent tab close', 'viewer tab creation', 'tab control', 'run cancellation', 'recording ownership', 'detach preserves browser', 'reconnect', 'finalized video', ...(process.argv[2] ? ['nginx preview'] : ['localhost app'])], durationMs: Date.now() - start }));
+})().catch(error => { console.error(error.message); process.exitCode = 1; }).finally(async () => {
+  for (const proc of viewers) if (proc.exitCode === null) { proc.stdin.end(); proc.kill('SIGTERM'); }
+  for (const run of runs) {
+    await exec(process.execPath, [path.join(__dirname, 'browser-close'), run.id], { timeout: 20_000 }).catch(() => {});
+    fs.rmSync(run.dir, { recursive: true, force: true });
+  }
+  server.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});

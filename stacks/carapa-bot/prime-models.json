@@ -1,0 +1,165 @@
+{
+  "providers": {
+    "carapa-codex": {
+      "baseUrl": "http://api-relay:8080/codex",
+      "api": "openai-codex-responses",
+      "apiKey": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoicmVsYXktcGxhY2Vob2xkZXIifX0.relay",
+      "authHeader": true,
+      "models": [
+        {
+          "id": "gpt-6.2-sol",
+          "name": "GPT-6.2 Sol (Carapa relay)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 500000,
+          "maxTokens": 128000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "gpt-6.2-astra",
+          "name": "GPT-6.2 Astra (Carapa relay)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "gpt-6.1-sol",
+          "name": "GPT-6.1 Sol (Carapa relay)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 500000,
+          "maxTokens": 128000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "gpt-6.1-terra",
+          "name": "GPT-6.1 Terra (Carapa relay)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 500000,
+          "maxTokens": 128000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "gpt-6-astra",
+          "name": "GPT-6 Astra (Carapa relay)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "gpt-6-luna",
+          "name": "GPT-6 Luna (Carapa relay)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    },
+    "carapa-llama": {
+      "baseUrl": "http://llama-proxy:8881/v1",
+      "api": "openai-completions",
+      "apiKey": "llama-proxy-no-auth",
+      "authHeader": true,
+      "models": [
+        {
+          "id": "qwen3.8",
+          "name": "Qwen3.8 27B (llama.cpp)",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": null,
+            "xhigh": "xhigh",
+            "max": null
+          },
+          "input": ["text", "image"],
+          "contextWindow": 160000,
+          "maxTokens": 128000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "supportsStore": false,
+            "supportsDeveloperRole": true,
+            "supportsReasoningEffort": true,
+            "maxTokensField": "max_tokens",
+            "thinkingFormat": "openai",
+            "supportsStrictMode": false
+          }
+        }
+      ]
+    },
+    "freellmapi": {
+      "baseUrl": "http://llama-proxy:3001/v1",
+      "api": "openai-completions",
+      "apiKey": "$OPENAI_API_KEY",
+      "authHeader": true,
+      "models": [
+        {
+          "id": "auto",
+          "name": "Auto (FreeLLMAPI)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 256000,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "supportsStore": false,
+            "supportsDeveloperRole": true,
+            "supportsReasoningEffort": true,
+            "maxTokensField": "max_tokens",
+            "thinkingFormat": "openai",
+            "supportsStrictMode": false
+          }
+        }
+      ]
+    }
+  }
+}

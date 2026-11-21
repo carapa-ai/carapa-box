@@ -1,0 +1,9 @@
+# Network egress policy for carapa-bot
+# Stack-specific domains (base domains from network-base.yaml apply to all stacks).
+# Changes are picked up automatically (~2s debounce).
+
+allowed_domains:
+  # Web search (agent browsing)
+  - www.google.com
+  - duckduckgo.com
+  - stackoverflow.com

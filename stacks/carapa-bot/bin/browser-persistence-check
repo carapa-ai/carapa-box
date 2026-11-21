@@ -1,0 +1,155 @@
+#!/usr/bin/env node
+'use strict';
+// Disposable probe for default-branch startup and collaboration between turns.
+const fs = require('node:fs');
+const path = require('node:path');
+const http = require('node:http');
+const { randomBytes } = require('node:crypto');
+const { spawn, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const { once } = require('node:events');
+const assert = require('node:assert/strict');
+const exec = promisify(execFile);
+const root = fs.mkdtempSync('/tmp/carapa-persistent-browser-check-');
+const contexts = [];
+const turns = [];
+const viewers = [];
+const server = http.createServer((req, res) => {
+  res.setHeader('Content-Type', 'text/html');
+  res.end(`<html><title>${req.url}</title><body><h1>Persistent session</h1><input></body></html>`);
+});
+async function tool(name, args, env = process.env, cwd = root) {
+  const result = await exec(process.execPath, [path.join(__dirname, name), ...args], { env, cwd, timeout: 60_000, maxBuffer: 2 * 1024 * 1024 });
+  assert(!result.stdout.includes('### Error'), result.stdout);
+  return result.stdout;
+}
+function context(url, suffix, serviceDirectory = false) {
+  const id = 'browser-' + randomBytes(20).toString('hex');
+  const workDir = path.join(root, suffix);
+  fs.mkdirSync(workDir);
+  const env = { CARAPA_BROWSER_SESSION_ID: id, CARAPA_BROWSER_WORK_DIR: workDir,
+    PLAYWRIGHT_CLI_SESSION: id, PLAYWRIGHT_DAEMON_SESSION_DIR: '/tmp/pwcli-' + id };
+  const descriptor = { id, projectId: 'probe-' + suffix, conversationId: suffix === 'main' ? null : suffix,
+    workDir: serviceDirectory ? path.join(root, 'missing-board-convention') : workDir,
+    useServiceWorkDir: serviceDirectory, env, requestedUrl: url };
+  const file = path.join('/workspace/ipc/browser-sessions', id + '.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(descriptor));
+  const value = { id, env, file, workDir, descriptor };
+  contexts.push(value);
+  return value;
+}
+function turn(value, index) {
+  const id = `browser-turn-check-${Date.now()}-${index}`;
+  const dir = path.join('/workspace/ipc/runs', id);
+  const env = { ...value.env, CARAPA_BROWSER_RUN_ID: id, CARAPA_RECORD: '0', CARAPA_AGENT_RUN_ID: id };
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'args.json'), JSON.stringify({ workDir: value.workDir, env }));
+  turns.push(dir);
+  return { dir, env };
+}
+function attach(value) {
+  const proc = spawn(process.execPath, [path.join(__dirname, 'browser-viewer'), value.id], { cwd: value.workDir, stdio: ['pipe', 'pipe', 'pipe'] });
+  viewers.push(proc);
+  const events = [];
+  let buffer = '';
+  proc.stderr.resume();
+  proc.stdout.setEncoding('utf8');
+  proc.stdout.on('data', chunk => {
+    buffer += chunk;
+    let index;
+    while ((index = buffer.indexOf('\n')) >= 0) {
+      const event = JSON.parse(buffer.slice(0, index)); buffer = buffer.slice(index + 1);
+      if (event.type === 'message') event.message = JSON.parse(event.data);
+      events.push(event);
+    }
+  });
+  async function wait(predicate) {
+    for (let attempt = 0; attempt < 400; attempt++) {
+      const error = events.find(e => e.type === 'error');
+      if (error) throw new Error(error.error);
+      const event = events.find(predicate);
+      if (event) return event;
+      if (proc.exitCode !== null) throw new Error('Viewer exited unexpectedly');
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error('Viewer event timed out');
+  }
+  return { proc, events, wait };
+}
+(async () => {
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  // "main" checks automatic nginx:80 resolution in the demo site, without a run or
+  // worktree. Otherwise use only the disposable localhost app (no nginx).
+  const main = context(process.argv[2] === 'main' ? undefined : base + '/main', 'main', true);
+  // Reproduce the demo site: Board's conventional path is absent, while the service
+  // has a valid, different cwd. The shim must use that cwd too.
+  fs.writeFileSync(main.file, JSON.stringify({ ...main.descriptor, useServiceWorkDir: false }));
+  await assert.rejects(tool('browser-open', [main.id, 'start'], process.env, main.workDir), /Browser working directory does not exist/);
+  fs.writeFileSync(main.file, JSON.stringify(main.descriptor));
+  await tool('browser-open', [main.id, 'start'], process.env, main.workDir);
+  const mainViewer = attach(main);
+  await mainViewer.wait(event => event.message?.method === 'frame');
+  mainViewer.proc.stdin.end(); await once(mainViewer.proc, 'exit');
+  const mainEnv = { ...process.env, ...main.env, CARAPA_BROWSER_WORK_DIR: main.workDir };
+  delete mainEnv.CARAPA_BROWSER_CONTEXT_FILE;
+  const location = await tool('playwright-cli', ['eval', '() => location.href'], mainEnv);
+  assert(location.includes(process.argv[2] === 'main' ? 'http://nginx/' : '/main'));
+  const chat = context(base + '/first', 'conversation');
+  // A preview file proves the same startup path resolves worktree app ports.
+  chat.descriptor.requestedUrl = undefined;
+  fs.writeFileSync(chat.file, JSON.stringify(chat.descriptor));
+  fs.writeFileSync(path.join(chat.workDir, '.preview-url'), base + '/worktree-preview');
+  await tool('browser-open', [chat.id, 'start']);
+  const first = turn(chat, 1);
+  const pointer = path.join(root, 'active_run');
+  fs.writeFileSync(pointer, first.dir);
+  const warm = { ...process.env, ...first.env, CARAPA_BROWSER_CONTEXT_FILE: pointer };
+  const cli = (...args) => tool('playwright-cli', args, warm);
+  assert((await cli('eval', '() => location.href')).includes('/worktree-preview'));
+  await cli('eval', '() => { document.cookie="shared=preserved; path=/"; localStorage.setItem("shared", "preserved"); }');
+  const list = JSON.parse(await cli('list', '--json'));
+  assert.equal(list.browsers.length, 1);
+  const viewer = attach(chat);
+  await viewer.wait(event => event.message?.method === 'frame');
+  fs.writeFileSync(path.join(first.dir, 'exit_code'), '0');
+  fs.rmSync(first.dir, { recursive: true });
+  await new Promise(resolve => setTimeout(resolve, 2200));
+  assert.equal(viewer.proc.exitCode, null, 'A completed turn must leave its viewer connected');
+  assert(!viewer.events.some(event => event.type === 'ended'));
+  viewer.proc.stdin.write(JSON.stringify({ id: 1, method: 'navigate', params: { url: base + '/between-turns' } }) + '\n');
+  await viewer.wait(event => event.message?.id === 1);
+  const second = turn(chat, 2);
+  fs.writeFileSync(pointer, second.dir);
+  assert((await cli('eval', '() => location.href')).includes('/between-turns'));
+  await cli('-s=accidental-new-session', 'open', base + '/next-turn');
+  await cli('open');
+  await cli('close');
+  assert((await cli('eval', '() => document.cookie + localStorage.getItem("shared")')).includes('shared=preserved'));
+  assert((await cli('eval', '() => location.href')).includes('/next-turn'));
+  await cli('tab-new', base + '/another-tab');
+  assert((await cli('tab-list')).includes('/next-turn'));
+  assert.equal(JSON.parse(await cli('list', '--json')).browsers.length, 1, 'Tabs and turns must reuse one browser');
+  viewer.proc.stdin.end(); await once(viewer.proc, 'exit');
+  assert((await cli('eval', '() => document.cookie')).includes('shared=preserved'));
+  const reconnected = attach(chat);
+  await reconnected.wait(event => event.message?.method === 'frame');
+  const isolated = await reconnected.wait(event => event.message?.method === 'sessions' && event.message.params.sessions.length);
+  assert.equal(isolated.message.params.sessions.length, 1);
+  reconnected.proc.stdin.end(); await once(reconnected.proc, 'exit');
+  await tool('browser-open', [chat.id, 'restart']);
+  assert(!(await cli('eval', '() => document.cookie')).includes('shared=preserved'));
+  assert((await tool('playwright-cli', ['eval', '() => location.href'], mainEnv)).includes(process.argv[2] === 'main' ? 'http://nginx/' : '/main'));
+  console.log(JSON.stringify({ ok: true, defaultBranchWithoutRun: true, defaultUrl: process.argv[2] === 'main' ? 'http://nginx/' : base,
+    worktreePreview: true, turnCompletion: true, warmDaemon: true, cookies: true, tabs: true, viewerDetach: true, reconnect: true, restart: true, isolatedRegistries: true }));
+})().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {
+  for (const viewer of viewers) if (viewer.exitCode === null) { viewer.stdin.end(); await Promise.race([once(viewer, 'exit'), new Promise(resolve => setTimeout(resolve, 3000))]); }
+  for (const value of contexts) {
+    await tool('browser-close', [value.id], process.env, value.workDir).catch(error => { console.error('Probe cleanup failed:', error.message); process.exitCode = 1; });
+    fs.rmSync(value.file, { force: true });
+  }
+  for (const dir of turns) fs.rmSync(dir, { recursive: true, force: true });
+  server.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});

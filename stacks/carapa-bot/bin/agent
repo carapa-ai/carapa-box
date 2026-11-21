@@ -1,0 +1,18 @@
+#!/bin/sh
+# Terminal `agent` through the relay with the harness's login and privacy settings.
+# Board runs set CURSOR_API_ENDPOINT themselves and get the real CLI unchanged.
+set -eu
+self=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+real=
+IFS=:
+for dir in $PATH; do
+  [ "$dir" = "$self" ] && continue
+  # The image and the live bin mount both put a copy of this wrapper on PATH;
+  # skip any copy (matched by the opening comment) or they exec each other.
+  head -c 256 "$dir/agent" 2>/dev/null | grep -q 'through the relay with the harness' && continue
+  if [ -x "$dir/agent" ]; then real=$dir/agent; break; fi
+done
+unset IFS
+[ -n "$real" ] || { echo "agent: not installed in this sandbox" >&2; exit 127; }
+[ -z "${CURSOR_API_ENDPOINT:-}" ] || exec "$real" "$@"
+exec bun --no-env-file "$self/runtime/terminal-cli.ts" agent "$real" "$@"
