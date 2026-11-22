@@ -13,10 +13,10 @@ import crypto from 'node:crypto';
 import { credentialText, parseCredentialText } from './credential-crypto.mjs';
 
 export const MCP_AUTH = 'mcp-oauth';
-export const RESERVED_SERVICE_NAMES = ['anthropic', 'anthropic-api', 'codex', 'google', 'antigravity', 'openai', 'openrouter', 'nvidia',
+const RESERVED_SERVICE_NAMES = ['anthropic', 'anthropic-api', 'codex', 'google', 'antigravity', 'openai', 'openrouter', 'nvidia',
   'meta', 'xai', 'muse-code', 'mcp-relay', 'board-api'];
-export const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:33418/callback';
-export const ATTEMPT_TTL_MS = 15 * 60_000;
+const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:33418/callback';
+const ATTEMPT_TTL_MS = 15 * 60_000;
 const REFRESH_BEFORE_MS = 60_000;
 // Matches Box MAX_PENDING; per (service, project) at most 2 login attempts run at once.
 const MAX_IN_FLIGHT = 16;
@@ -28,7 +28,7 @@ const ADMIN_RESERVED_SLOTS = 4;
 const SAFE_NAME = /^[\w-]+$/;
 const DNS_HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
-export class McpOAuthError extends Error {
+class McpOAuthError extends Error {
   constructor(code, { terminal = false } = {}) {
     super(code);
     this.code = code;
@@ -39,7 +39,7 @@ export class McpOAuthError extends Error {
 // ── Config ──────────────────────────────────────────────────────────────────
 
 /** Lower-cased DNS host or null: no IP literal, localhost, host.docker.internal, *.internal, *.local. */
-export function dnsHost(value) {
+function dnsHost(value) {
   if (typeof value !== 'string') return null;
   const host = value.toLowerCase();
   if (!DNS_HOST.test(host) || host === 'host.docker.internal' || host.endsWith('.internal') || host.endsWith('.local')) return null;
@@ -110,7 +110,7 @@ function trustedUrl(value, config) {
 const INITIALIZE = { jsonrpc: '2.0', id: 1, method: 'initialize', params: {
   protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'CarapaBox relay', version: '1' } } };
 
-export function parseChallenge(header) {
+function parseChallenge(header) {
   const values = {};
   if (typeof header !== 'string') return values;
   for (const [, key, quoted, bare] of header.matchAll(/([\w-]+)=(?:"([^"]*)"|([^\s,]+))/g)) values[key.toLowerCase()] ??= quoted ?? bare;
@@ -272,7 +272,7 @@ export async function refresh({ config, asMeta, client, refreshToken }, io) {
 }
 
 /** RFC 7009. Best effort: never throws. */
-export async function revoke({ config, asMeta, client, token, hint = 'refresh_token' }, { request }) {
+async function revoke({ config, asMeta, client, token, hint = 'refresh_token' }, { request }) {
   if (!asMeta.revocationEndpoint || !token) return false;
   try {
     const headers = {};

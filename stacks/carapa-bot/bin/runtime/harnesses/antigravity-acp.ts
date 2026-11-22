@@ -42,7 +42,6 @@ export const antigravityAcpContract: AcpHarnessContract = {
   id: 'antigravity-acp',
   restore: 'resume',
   restoreFailure: 'fail',
-  reportModel: true,
   steerMidTurn: true,
   prepare(context) {
     const method = authMethod(context);

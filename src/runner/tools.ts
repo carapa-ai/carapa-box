@@ -281,7 +281,7 @@ export const executable = (file: string): boolean => {
 };
 
 /** Harnesses this runner can launch: their program is on the agents' PATH. */
-export function installedNativeHarnesses(searchPath = process.env.PATH ?? ""): string[] {
+function installedNativeHarnesses(searchPath = process.env.PATH ?? ""): string[] {
     const dirs = searchPath.split(":").filter(Boolean);
     return [
         ...Object.entries(HARNESS_PROGRAMS).filter(([, program]) => dirs.some(dir => executable(path.join(dir, program)))),

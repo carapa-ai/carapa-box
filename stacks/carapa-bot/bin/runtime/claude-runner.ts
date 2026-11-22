@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -130,6 +130,20 @@ const LSP_SERVERS: Record<string, { command: string; args?: string[]; extensionT
   },
 };
 
+/** Last non-empty stderr lines the provider wrote after `offset`; empty when there are none. */
+function providerStderrTail(path: string, offset: number): string {
+  try {
+    const size = statSync(path).size;
+    const start = size < offset ? 0 : offset;
+    const bytes = Buffer.alloc(size - start);
+    const fd = openSync(path, 'r');
+    try { readSync(fd, bytes, 0, bytes.length, start); } finally { closeSync(fd); }
+    return bytes.toString('utf8').split('\n').map(line => line.trim()).filter(Boolean).slice(-5).join('\n').slice(-4_000);
+  } catch {
+    return '';
+  }
+}
+
 /** Session-only plugin declaring the servers this container has; '' when it has none. */
 function claudeLspPlugin(env: Record<string, string>): string {
   const servers = Object.fromEntries(Object.entries(LSP_SERVERS).filter(([, server]) => Bun.which(server.command, { PATH: env.PATH ?? '' })));
@@ -190,13 +204,14 @@ export async function runClaudeHarness(context: RunContext): Promise<number> {
   writeRunFile(context.runDir, 'session_dir', sessionDir);
   for (const name of ['control-requests', 'control-responses']) mkdirSync(join(context.runDir, name), { recursive: true });
   const raw = join(context.runDir, 'claude.raw.jsonl');
-  const output = join(context.runDir, 'output.jsonl');
   writeFileSync(raw, '');
-  writeFileSync(output, '');
   rmSync(join(context.runDir, 'claude-turn-cost.json'), { force: true });
   const input = join(sessionDir, 'claude-input');
   const journal = join(sessionDir, 'claude.out');
   const inFlight = join(sessionDir, 'turn_in_flight');
+  const stderrPath = join(sessionDir, 'claude.stderr.log');
+  // The log accumulates across launches; only what this run wrote after taking the lock explains its failure.
+  let stderrOffset: number | undefined;
   let lock = '';
   let pid: number | undefined;
   let adapter: ClaudeRunV1Adapter | undefined;
@@ -232,6 +247,7 @@ export async function runClaudeHarness(context: RunContext): Promise<number> {
   const questions = new Map<string, { requestId: unknown; input: Json }>();
   try {
     lock = await acquireSessionLock(sessionDir, context.runDir);
+    stderrOffset = statSync(stderrPath, { throwIfNoEntry: false })?.size ?? 0;
     // Read after the lock: the preceding turn may just have published its ID.
     const savedSession = readText(join(sessionDir, 'session_id'));
     const sessionId = context.args.sessionId || savedSession;
@@ -275,7 +291,7 @@ export async function runClaudeHarness(context: RunContext): Promise<number> {
       }
       const launched = await startProtocolDaemon({
         ...claudeLaunch(context, sessionId, mcpServers), cwd: context.cwd, sessionDir, input, output: journal,
-        stderr: join(sessionDir, 'claude.stderr.log'),
+        stderr: stderrPath,
         idleMs: persistent ? Math.max(1, Number(context.env.CARAPA_PERSIST_IDLE_MIN || 30)) * 60_000 : 0,
       });
       pid = launched.pid;
@@ -480,7 +496,6 @@ export async function runClaudeHarness(context: RunContext): Promise<number> {
         if (typeof message.session_id === 'string' && message.session_id && !message.parent_tool_use_id) {
           atomicWrite(join(sessionDir, 'session_id'), message.session_id);
         }
-        appendFileSync(output, `${JSON.stringify(message)}\n`);
         // Sub-agent events stay in the raw journal only; the parent shows its own turn.
         if (!message.parent_tool_use_id) adapter.consume(message);
         if (!firstOutput && ['assistant', 'result'].includes(String(message.type))) {
@@ -554,10 +569,12 @@ export async function runClaudeHarness(context: RunContext): Promise<number> {
     adapter.finish(0, interrupted);
     return adapter.failed ? 1 : 0;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const failure = error instanceof Error ? error.message : String(error);
+    const stderrTail = stderrOffset === undefined ? '' : providerStderrTail(stderrPath, stderrOffset);
+    const message = stderrTail ? `${failure}: ${stderrTail}` : failure;
     adapter ??= new ClaudeRunV1Adapter(createRunV1Writer(context, 'claude'), context.args.model.trim(), Boolean(context.args.sessionId));
     adapter.finish(1, interrupted, message);
-    appendFileSync(join(context.runDir, 'agent-stderr.log'), `managed Claude: ${message}; provider stderr: ${join(sessionDir, 'claude.stderr.log')}\n`);
+    appendFileSync(join(context.runDir, 'agent-stderr.log'), `managed Claude: ${message}; provider stderr: ${stderrPath}\n`);
     return 1;
   } finally {
     guard?.stop();

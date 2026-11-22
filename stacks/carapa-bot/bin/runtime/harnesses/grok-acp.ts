@@ -60,7 +60,6 @@ export const grokAcpContract: AcpHarnessContract = {
   id: 'grok-acp',
   restore: 'load',
   restoreFailure: 'new-session',
-  reportModel: true,
   prepare(context: RunContext) {
     // An API key would send traffic to api.x.ai at API prices, bypassing the relay.
     delete context.env.XAI_API_KEY;

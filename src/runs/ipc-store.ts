@@ -19,9 +19,9 @@ import { closeFd, openDirChain, openFileAt, removeTreeAt, renameAt, withParent, 
 export { IpcPathError };
 
 /** Largest payload returned by a single read (bytes, before base64). */
-export const MAX_READ_BYTES = 4 * 1024 * 1024;
+const MAX_READ_BYTES = 4 * 1024 * 1024;
 /** Largest payload accepted by a single write (bytes, after decoding). */
-export const MAX_WRITE_BYTES = 64 * 1024 * 1024;
+const MAX_WRITE_BYTES = 64 * 1024 * 1024;
 
 // Dot-files (.mcp.json, .claude/, .cleanup-complete) are allowed; "." and ".." never.
 const SEGMENT = /^[A-Za-z0-9_.][A-Za-z0-9._@+=-]{0,199}$/;
@@ -65,7 +65,7 @@ export function resolveGroupsRoot(env: NodeJS.ProcessEnv = process.env): string 
  * Resolve a logical mount reference sent by Board for a remote box:
  *   @group[/<folder>...] -> CARAPA_BOX_GROUPS_ROOT[/...]
  *   @repo/<name>[/...]   -> CARAPA_BOX_REPOS_ROOT/<name>[/...]
- * Other values are returned unchanged (legacy absolute host paths).
+ * Other values are returned unchanged: absolute host paths are the normal form on the local box.
  */
 export function resolveLogicalMount(value: string, env: NodeJS.ProcessEnv = process.env): string {
     const match = /^@(group|repo)(?:\/(.*))?$/.exec(value);

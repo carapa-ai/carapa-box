@@ -140,7 +140,7 @@ if (process.argv[2] === 'export') {
     expect(readFileSync(value.promptFile, 'utf8')).toBe('prompt over stdin');
     expect(readFileSync(value.envProbeFile, 'utf8')).toBe('unset');
     expect(readFileSync(value.argsFile, 'utf8')).toContain('--output-format');
-    expect(readFileSync(join(value.runDir, 'output.jsonl'), 'utf8')).toContain('session_id');
+    expect(readFileSync(join(value.runDir, 'output.v1.jsonl'), 'utf8')).toContain('"type":"session"');
     expect(JSON.parse(readFileSync(join(value.runDir, 'metrics.json'), 'utf8')).harness).toBe('claude');
   });
 

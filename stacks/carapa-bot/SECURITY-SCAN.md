@@ -1,3 +1,75 @@
+# Public runtime scan — 2026-11-22
+
+## Alpine runtime `carapa-bot:0.1.0-alpine`
+
+Local image ID
+`sha256:9ce618088d1faab9c67623ff5f1f8c7878763e766e7f8e400bd17f1e077f55b0`, built
+with `./build.sh --alpine --no-cache` from the pinned `dhi.io/node:26-alpine3.23-dev`
+and `dhi.io/bun:1.4.4-alpine3.23-dev` bases (Node 26.12.1, Bun 1.4.4, npm 12.0.2,
+Python 3.15.2, musl 1.2.5-r24, FFmpeg 8.0.1-r1, PulseAudio 17.0-r5, Chromium
+149.0.7827.53-r0). Nothing was pushed.
+
+Trivy 0.76.2 (and 0.69.3, with the same result) with its database updated at
+`2026-11-22T07:05:02Z`, without VEX or ignore-list suppression, scanned 331 Alpine
+packages and the bundled npm and Yarn packages and reports:
+
+| Raw package/CVE findings | Alpine runtime |
+| --- | ---: |
+| HIGH | 0 |
+| CRITICAL | 0 |
+| Distinct CVE IDs | 0 |
+
+As in the 2026-09-22 assessment, zero reported findings is not a browser-security
+comparison: Alpine's Chromium 149 is seven major versions behind the Debian
+runtime's Chromium 156, and Alpine's advisory coverage differs from Debian's.
+Keep Alpine optional and review browser updates before rollout.
+
+## Debian runtime `carapa-bot:0.1.0`
+
+Rebuilt with `./build.sh --no-cache` as local image
+`sha256:15be0aebcb530c2b1e0f24f738291412e01bea9b0e8bb6ef3c177bff99822d8f` and
+scanned with the same Trivy 0.76.2 and database. The 2026-11-15 image it replaced
+had 832 findings, 34 of them fixable (apt, zlib, linux-libc-dev); the rebuild
+installs those fixes and reports the same totals as the 2026-11-21 scan below:
+**789 HIGH, 3 CRITICAL, 387 distinct CVE IDs, 0 with a fixed version available.**
+
+Chromium and chromium-common still account for 482 findings. Each was fixed
+upstream in Chrome 157 or 158 (Google's Linux stable is 158.0.8127.36), but
+Debian's newest Chromium in every suite, including sid, is 156.0.8078.79. These
+clear only when Debian ships a newer Chromium; replacing the Debian package with
+Google's builds would be a separate packaging decision. The CRITICAL findings are
+unchanged: CVE-2026-6653 (libxml2) and CVE-2026-60002 (openssh-client,
+openssh-sftp-server), both still `affected` in Debian.
+
+# Public runtime scan — 2026-11-21
+
+## Debian runtime `carapa-bot:0.1.0`
+
+Local image ID
+`sha256:c33ccbf387d9cb8a7f541118e0ce4c1b4d4c63eab8c5fa64c85a80b918b86a10`, built
+from pinned `dhi.io/node:26-dev` with `apt-get upgrade` (Node 26.13.1, Bun 1.4.4,
+apt 3.0.4, Chromium 156.0.8078.79). Nothing was pushed.
+
+`build.sh` now reports CVE findings without failing; review this report before
+publishing. Trivy 0.75.0 with its database updated at `2026-11-21T07:02:51Z`,
+without VEX or ignore-list suppression, reports:
+
+| Raw package/CVE findings | Debian runtime |
+| --- | ---: |
+| HIGH | 789 |
+| CRITICAL | 3 |
+| Distinct CVE IDs | 387 |
+| With a fixed version available | 0 |
+
+Every finding is `affected` (712), `fix_deferred` (79) or `will_not_fix` (1) in
+Debian. Chromium and chromium-common account for 482. The CRITICAL findings are
+CVE-2026-6653 (libxml2) and CVE-2026-60002 (openssh-client, openssh-sftp-server).
+
+Earlier counts are not comparable: the DHI base's `/var/lib/dpkg/status.d`
+records went stale after `apt-get upgrade`, so scanners also reported versions no
+longer installed (868 findings before they were dropped). The Alpine candidate
+below was not rebuilt; it still pins Bun 1.4.2 and musl 1.2.5-r23.
+
 # Public runtime scan — 2026-09-22
 
 ## Alpine candidate

@@ -22,9 +22,7 @@ try {
   const image = process.env.CARAPA_BOT_IMAGE || configured || 'carapa-bot:0.1.0';
   const selection = JSON.parse(fs.readFileSync(path.join(stack, '.harness/active/selection.json'), 'utf8'));
   if (selection.image_ref !== image) throw new Error('Image changed; select/validate a compatible harness volume with harness.py before startup');
-  const live = /^carapa-harness-live-[0-9a-f]{24}$/.test(selection.volume);
-  if (!live && !/^carapa-bot-harness-[0-9a-f]{32}$/.test(selection.volume)) throw new Error('Invalid harness volume selection');
-  if (!live) throw new Error('Legacy harness selection: run update-harnesses.sh to prepare a stable store before starting this stack');
+  if (!/^carapa-harness-live-[0-9a-f]{24}$/.test(selection.volume)) throw new Error('invalid harness volume selection');
   const [info] = JSON.parse(docker(['image', 'inspect', image], true));
   if (info.Config?.Labels?.['ai.carapa.harness-layout'] !== '1') throw new Error('Incompatible public runtime image');
   if (info.Config?.Labels?.['ai.carapa.harness-store-layout'] !== '1') throw new Error('Stable harness store needs the updated runtime image; rebuild/pull it before recreating this sandbox');

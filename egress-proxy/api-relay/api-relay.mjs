@@ -1250,7 +1250,7 @@ export function startApiRelay({ env = process.env, port = 8080, host, clientsDir
 
   // ── Secret reading (Docker Compose file-based secrets) ──────────────────
   // Secrets are mounted at /run/secrets/<name> by Docker Compose.
-  // Falls back to environment variables for backward compatibility.
+  // Environment variables are a supported alternative; file secrets are preferred.
   // Env var names are normalised to lowercase with underscores for the
   // secret file lookup: ANTHROPIC_API_KEY → /run/secrets/anthropic_api_key
 
@@ -1700,10 +1700,7 @@ export function startApiRelay({ env = process.env, port = 8080, host, clientsDir
       const now = Date.now();
       const cached = tokenCache.get(cacheKey);
       if (cached && cached.exp > now) {
-        if (cached.token) {
-          console.log(`[relay] using cached auto-token${scope} for ${clientHostname} (candidate "${name}")`);
-          return cached.token;
-        }
+        if (cached.token) return cached.token;
         continue; // cached negative — skip without re-fetching
       }
 

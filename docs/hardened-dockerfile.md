@@ -106,7 +106,7 @@ first in `PATH`, matching `sandbox_exec` bare-name override precedence.
 
 | Script | Purpose |
 |---|---|
-| `run-agent.sh` | Launches agent processes from a run directory containing `args.json` + `prompt.txt`. Writes `output.jsonl`, `exit_code`, and `pid`. |
+| `run-agent.sh` | Launches agent processes from a run directory containing `args.json` + `prompt.txt`. Writes `output.v1.jsonl` + `output.v1.meta.json`, `exit_code`, and `pid`. |
 | `stop-agent.sh` | Gracefully kills agent process trees (SIGTERM → SIGKILL fallback). Writes exit code 137. |
 
 `run-agent.sh` supports multiple backends via a `case` statement — the

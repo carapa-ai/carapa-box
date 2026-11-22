@@ -24,8 +24,6 @@ export function configureCredentialSealing(env, root) {
   return true;
 }
 
-export const credentialSealingEnabled = () => configured.key !== null;
-
 /** The sealed name of a file inside the root, or null when it is outside (never sealed). */
 function sealedName(file) {
   if (!configured.root) return null;
@@ -33,7 +31,7 @@ function sealedName(file) {
   return relative && !relative.startsWith('..') && !path.isAbsolute(relative) ? relative.split(path.sep).join('/') : null;
 }
 
-export const isSealed = value => !!value && typeof value === 'object' && value[MARK] === 1;
+const isSealed = value => !!value && typeof value === 'object' && value[MARK] === 1;
 
 /** The text to write for a secret JSON value at `file`: sealed when a key is configured and the file is in the store. */
 export function credentialText(file, value) {

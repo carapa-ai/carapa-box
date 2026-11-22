@@ -3,7 +3,7 @@
 // combines them with the models each harness reports.
 import { antigravityModelsRequest, providerJson } from './provider-usage.js';
 
-export type DiscoveredModel = {
+type DiscoveredModel = {
   id: string; name?: string; contextSize?: number; maxOutputTokens?: number;
   reasoning?: string[]; defaultReasoning?: string; inputs?: string[];
   /** Oldest harness client the provider serves this model to. */
@@ -20,13 +20,13 @@ const texts = (value: unknown) => Array.isArray(value) ? value.filter(text) : un
 const compact = (model: DiscoveredModel) =>
   Object.fromEntries(Object.entries(model).filter(([, v]) => v !== undefined)) as DiscoveredModel;
 
-export function parseAnthropicModels(body: any): DiscoveredModel[] {
+function parseAnthropicModels(body: any): DiscoveredModel[] {
   return (Array.isArray(body?.data) ? body.data : []).flatMap((m: any) => !text(m?.id) ? [] : [compact({
     id: m.id, name: text(m.display_name), contextSize: count(m.max_input_tokens), maxOutputTokens: count(m.max_tokens) })]);
 }
 
 // Hidden entries are Codex's own helpers (auto review, reserve capacity).
-export function parseCodexModels(body: any): DiscoveredModel[] {
+function parseCodexModels(body: any): DiscoveredModel[] {
   return (Array.isArray(body?.models) ? body.models : []).flatMap((m: any) => !text(m?.slug) || m.visibility === 'hide' ? [] : [compact({
     id: m.slug, name: text(m.display_name), contextSize: count(m.context_window),
     reasoning: texts(Array.isArray(m.supported_reasoning_levels) ? m.supported_reasoning_levels.map((r: any) => r?.effort) : undefined),
@@ -35,7 +35,7 @@ export function parseCodexModels(body: any): DiscoveredModel[] {
 }
 
 // Unnamed and chat_*/tab_* entries are the backend's internal helper models.
-export function parseAntigravityModels(body: any): DiscoveredModel[] {
+function parseAntigravityModels(body: any): DiscoveredModel[] {
   return Object.entries<any>(body?.models ?? {}).flatMap(([id, m]) =>
     !text(m?.displayName) || m.isInternal || /^(chat|tab)_/.test(id) ? [] : [compact({
       id, name: m.displayName, contextSize: count(m.maxTokens), maxOutputTokens: count(m.maxOutputTokens),

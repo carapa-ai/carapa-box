@@ -142,7 +142,7 @@ entry and `jq` installed:
 
 | Script | Purpose |
 |---|---|
-| `run-agent.sh` | Launches agent processes; reads `args.json` + `prompt.txt` from a run directory, writes `output.jsonl` + `exit_code` + `pid` |
+| `run-agent.sh` | Launches agent processes; reads `args.json` + `prompt.txt` from a run directory, writes `output.v1.jsonl` + `output.v1.meta.json`, `exit_code`, and `pid` |
 | `stop-agent.sh` | Gracefully kills agent process trees; writes exit code 137 |
 | `claude-ollama.sh` | Runs Claude via local Ollama backend |
 | `claude-llama.sh` | Runs Claude via local LiteLLM/llama backend |

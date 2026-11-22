@@ -30,7 +30,7 @@ import { OmpAcpRunV1Adapter } from '../omp-v1';
 import { HermesAcpRunV1Adapter } from '../hermes-v1';
 import { PrimeAgentRunV1Adapter } from '../prime-agent-v1';
 import { CursorAcpRunV1Adapter } from '../cursor-v1';
-import { RunV1Writer } from '../run-v1';
+import { RunV1Writer, createRunV1Writer, ensureRunTerminal } from '../run-v1';
 
 type Json = Record<string, any>;
 
@@ -39,8 +39,7 @@ interface ReadCursor {
 }
 
 export interface TranslationState {
-  thought: string;
-  tools: Map<string, { command: string; completed: boolean }>;
+  completedTools: Set<string>;
   visibleText: string[];
   providerFailure?: string;
 }
@@ -71,10 +70,6 @@ const readPid = (path: string): number | null => {
 };
 
 const safeKey = (value: string): string => value.replace(/[^A-Za-z0-9_.-]/g, '_');
-
-function appendJson(path: string, value: unknown): void {
-  appendFileSync(path, `${JSON.stringify(value)}\n`);
-}
 
 function readMessages(path: string, cursor: ReadCursor, rawCapturePath?: string): Json[] {
   return readJournal(path, cursor, rawCapturePath).flatMap(line => {
@@ -170,82 +165,26 @@ export function providerFailureMessage(text: string): string {
   ].filter(Boolean).join(' ');
 }
 
-function commandFor(update: Json): string {
-  const input = update.rawInput;
-  if (typeof input === 'string') return input;
-  return String(input?.command ?? input?.cmd ?? input?.exec ?? update.title ?? 'tool');
-}
-
-function outputFor(update: Json): string | null {
-  const raw = update.rawOutput;
-  if (typeof raw === 'string') return raw || null;
-  if (raw && typeof raw === 'object') {
-    const value = raw.stdout ?? raw.output ?? raw.text ?? raw.result;
-    if (value != null && String(value)) return String(value);
-  }
-  const text = (update.content ?? [])
-    .flatMap((item: Json) => (item?.type === 'text' && item.text ? [String(item.text)] : []))
-    .join('\n');
-  return text || null;
-}
-
-function flushThought(state: TranslationState, outputPath: string): void {
-  if (!state.thought) return;
-  appendJson(outputPath, {
-    type: 'item.completed',
-    item: { type: 'reasoning', text: state.thought },
-  });
-  state.thought = '';
-}
-
-export function translateAcpMessage(message: Json, state: TranslationState, outputPath: string): boolean {
+/** Tracks what decides the turn's outcome and first output; V1 adapters render the events themselves. */
+export function translateAcpMessage(message: Json, state: TranslationState): boolean {
   if (message.method !== 'session/update') return false;
   const update = message.params?.update;
   if (!update || typeof update !== 'object') return false;
-  if (update.sessionUpdate === 'agent_thought_chunk') {
-    const text = update.content?.text;
-    if (typeof text === 'string') state.thought += text;
-    return false;
-  }
   if (update.sessionUpdate === 'agent_message_chunk') {
-    flushThought(state, outputPath);
     const text = update.content?.text;
     if (typeof text !== 'string' || !text) return false;
     state.visibleText.push(text);
     const visibleText = state.visibleText.join('');
     if (isProviderFailureText(visibleText)) state.providerFailure = visibleText;
-    appendJson(outputPath, { type: 'text', part: { type: 'text', text } });
     return true;
-  }
-  if (update.sessionUpdate === 'tool_call') {
-    flushThought(state, outputPath);
-    const id = String(update.toolCallId ?? '');
-    const command = commandFor(update);
-    if (id) state.tools.set(id, { command, completed: false });
-    appendJson(outputPath, {
-      type: 'item.started',
-      item: { type: 'command_execution', command },
-    });
   }
   // Antigravity replays a finished tool as a single tool_call that is already terminal.
   if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
     const terminal = ['completed', 'failed', 'finished', 'cancelled'].includes(update.status);
     if (!terminal) return update.sessionUpdate === 'tool_call';
-    flushThought(state, outputPath);
     const id = String(update.toolCallId ?? '');
-    const existing = state.tools.get(id);
-    if (existing?.completed) return false;
-    const command = existing?.command ?? commandFor(update);
-    if (id) state.tools.set(id, { command, completed: true });
-    appendJson(outputPath, {
-      type: 'item.completed',
-      item: {
-        type: 'command_execution',
-        command,
-        exit_code: update.status === 'failed' ? 1 : 0,
-        aggregated_output: outputFor(update),
-      },
-    });
+    if (id && state.completedTools.has(id)) return false;
+    if (id) state.completedTools.add(id);
     return true;
   }
   return false;
@@ -644,7 +583,6 @@ export async function runAcpHarness(context: RunContext, contract: AcpHarnessCon
         if (recoveryPrompt && sessionId !== publishedSessionId) {
           // The reload failed and a new session replaced the abandoned one: the saved id is published
           // now, so an interrupt during configuration leaves both outputs naming it.
-          appendJson(join(context.runDir, 'output.jsonl'), { type: 'thread.started', thread_id: sessionId });
           writer?.append({ type: 'session', id: sessionId, status: 'started' });
           publishedSessionId = sessionId;
         }
@@ -654,9 +592,9 @@ export async function runAcpHarness(context: RunContext, contract: AcpHarnessCon
       // Board's model discovery only needs the lists recorded above; stop
       // before configuring or prompting so the model is never called.
       if (context.env.CARAPA_MODEL_PROBE === '1') {
-        const outputPath = join(context.runDir, 'output.jsonl');
-        writeFileSync(outputPath, `${JSON.stringify({ type: 'thread.started', thread_id: sessionId })}\n`);
-        appendJson(outputPath, { type: 'turn.completed' });
+        const probe = createRunV1Writer(context, contract.id);
+        probe.append({ type: 'session', id: sessionId, status: 'started' });
+        probe.finish('completed', { stopReason: 'end_turn' });
         return 0;
       }
       if (contract.sessionIdentity && contract.sessionIdentityPath) {
@@ -682,12 +620,8 @@ export async function runAcpHarness(context: RunContext, contract: AcpHarnessCon
       }
       if (context.args.model) writeFileSync(join(sessionDir, 'model_id'), context.args.model);
 
-      const outputPath = join(context.runDir, 'output.jsonl');
       const rawAcpPath = join(context.runDir, 'acp.raw.jsonl');
-      if (!recoveryPrompt) {
-        writeFileSync(outputPath, `${JSON.stringify({ type: 'thread.started', thread_id: sessionId })}\n`);
-        writeFileSync(rawAcpPath, '');
-      }
+      if (!recoveryPrompt) writeFileSync(rawAcpPath, '');
       const v1RequestedModel = contract.id === 'cursor-acp'
         ? cursorDisplayModel(trim(join(sessionDir, 'model_id')) || context.args.model.trim())
         : context.args.model.trim();
@@ -763,8 +697,7 @@ export async function runAcpHarness(context: RunContext, contract: AcpHarnessCon
         }
       }
       const translation: TranslationState = {
-        thought: '',
-        tools: new Map(),
+        completedTools: new Set(),
         visibleText: [],
       };
       const guard = startResourceGuard(context, activeDaemonPid);
@@ -786,7 +719,7 @@ export async function runAcpHarness(context: RunContext, contract: AcpHarnessCon
         const state = background!.poll(promptReturned);
         for (const message of state.updates) {
           v1?.consume(message);
-          translateAcpMessage(message, translation, outputPath);
+          translateAcpMessage(message, translation);
         }
         for (const name of Object.keys(unreported) as Array<keyof typeof unreported>) unreported[name] += Number(state.usage?.[name]) || 0;
         const tasks = JSON.stringify(state.tasks);
@@ -813,7 +746,7 @@ export async function runAcpHarness(context: RunContext, contract: AcpHarnessCon
             v1?.consume(message);
             const reply = contract.reply ? contract.reply(message) : permissionReply(message);
             if (reply) send(fifo, reply);
-            translateAcpMessage(message, translation, outputPath);
+            translateAcpMessage(message, translation);
             if (superseded.has(String(message.id)) && message.method == null && message.result && typeof message.result === 'object')
               v1?.result?.(message.result as Json);
           }
@@ -843,7 +776,7 @@ export async function runAcpHarness(context: RunContext, contract: AcpHarnessCon
             // the failure later in this batch is still the turn's outcome.
             if (daemonIdentity(fifo)) throw error;
           }
-          const emitted = translateAcpMessage(message, translation, outputPath);
+          const emitted = translateAcpMessage(message, translation);
           if (emitted && firstOutputAtMs === null) {
             firstOutputAtMs = Date.now();
             writeRunFile(context.runDir, 'first_output_at_ms', String(firstOutputAtMs));
@@ -912,7 +845,6 @@ export async function runAcpHarness(context: RunContext, contract: AcpHarnessCon
         guard.stop();
         retireTurnDescendants(activeDaemonPid, baseline);
       }
-      flushThought(translation, outputPath);
       if (!completion) throw new Error(`${contract.id} turn timed out`);
       const stopReason = String(completion.result?.stopReason ?? completion.result?.stop_reason ?? '');
       const failure = failureOf(completion);
@@ -938,39 +870,19 @@ export async function runAcpHarness(context: RunContext, contract: AcpHarnessCon
         // The reloaded session, not an explicit id that was already replaced.
         context.args.sessionId = '';
         const notice = `${contract.id} crashed on this turn (${failure}); restarted the agent process and retrying once.`;
-        appendJson(outputPath, { type: 'text', part: { type: 'text', text: `\n[${notice}]\n` } });
         runWriter.append({ type: 'message', id: 'harness-restart-notice', role: 'system', content: notice, format: 'text', status: 'completed' });
         continue;
       }
-      if (contract.reportModel) {
-        const model = contract.id === 'cursor-acp'
-          ? cursorDisplayModel(trim(join(sessionDir, 'model_id')) || context.args.model)
-          : trim(join(sessionDir, 'model_id')) || context.args.model;
-        if (model)
-          appendJson(outputPath, {
-            type: 'assistant',
-            message: { content: [], model },
-          });
+      let terminalFailure = failure;
+      if (!failure && !(stopReason === 'end_turn' || (stopReason === 'cancelled' && interrupted))) {
+        terminalFailure = stopReason ? `turn ended: ${stopReason}` : 'ACP turn ended without a stop reason';
       }
-      if (failure) {
-        appendJson(outputPath, {
-          type: 'turn.failed',
-          error: { message: failure },
-        });
-        exitCode = 1;
-      } else if (stopReason === 'end_turn' || (stopReason === 'cancelled' && interrupted)) {
-        appendJson(outputPath, { type: 'turn.completed' });
-        exitCode = 0;
-      } else {
-        const message = stopReason ? `turn ended: ${stopReason}` : 'ACP turn ended without a stop reason';
-        appendJson(outputPath, { type: 'turn.failed', error: { message } });
-        exitCode = 1;
-      }
+      exitCode = terminalFailure ? 1 : 0;
       // The prompt's own usage goes last: Board reads context occupancy from the latest entry.
       if (unreported.totalTokens) v1?.result?.({ usage: unreported });
       if (completion.result && typeof completion.result === 'object') v1?.result?.(completion.result as Json);
       if (publishedTasks !== '[]') runWriter.append({ type: 'background_tasks', tasks: [] });
-      v1?.finish(exitCode, failure);
+      v1?.finish(exitCode, terminalFailure);
       // A retry that did not succeed leaves a replacement that proved no better: retire it as well.
       if ((recoveryPrompt && exitCode !== 0) || (failure && contract.retireDaemonAfter?.(failure))) {
         await terminateProcessTree(activeDaemonPid);
@@ -999,16 +911,12 @@ export async function runAcpHarness(context: RunContext, contract: AcpHarnessCon
     }
     if (error instanceof RecoveryInterrupted) {
       // Settled like an interrupted turn: the agent is gone, the saved session reloads next run.
-      appendJson(join(context.runDir, 'output.jsonl'), { type: 'turn.completed' });
       v1?.finish(0, '');
       return 0;
     }
     const message = error instanceof Error ? error.message : String(error);
-    appendJson(join(context.runDir, 'output.jsonl'), {
-      type: 'turn.failed',
-      error: { message },
-    });
-    v1?.finish(1, message);
+    if (v1) v1.finish(1, message);
+    else ensureRunTerminal(context, 1, message);
     appendFileSync(join(context.runDir, 'agent-stderr.log'), `managed ACP: ${message}\n`);
     return 1;
   } finally {

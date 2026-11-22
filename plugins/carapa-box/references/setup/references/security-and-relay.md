@@ -76,8 +76,7 @@ Distinguish:
 - CarapaBox control routes, which belong to trusted operator/controller clients.
 
 Do not add `sandbox-relay` to agent client configurations to make setup work.
-Current agent clients have no CarapaBox control route; older README examples may
-show an obsolete topology. Agent networks stay internal and outbound domains
+Current agent clients have no CarapaBox control route. Agent networks stay internal and outbound domains
 remain allowlisted. Do not broaden allowlists to `*` or restart Docker to resolve
 a single missing provider route.
 

@@ -324,7 +324,7 @@ describe("OpenShell runner config", () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), "carapa-openshell-cfg-"));
         roots.push(root);
         fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ hubUrl: "wss://hub", boxId: "lab", credential: "x", relayUpstream: "https://hub:8443", openshell }));
-        return loadRunnerConfig({ OS_RUNNER_ROOT: root });
+        return loadRunnerConfig({ CARAPA_RUNNER_ROOT: root });
     };
 
     it("applies defaults and validates mounts", () => {
@@ -334,12 +334,5 @@ describe("OpenShell runner config", () => {
         expect(() => load({})).toThrow("openshell.image");
         expect(() => load({ image: "a", mounts: [{ type: "bind", source: "rel", target: "/x" }] })).toThrow("absolute");
         expect(() => load({ image: "a", mounts: [{ type: "volume", source: "v", target: "/x", subpath: "../up" }] })).toThrow("subpath");
-    });
-
-    it("still reads the former CARAPA_RUNNER_ROOT name", () => {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), "carapa-openshell-legacy-"));
-        roots.push(root);
-        fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ hubUrl: "wss://hub", boxId: "legacy", credential: "x", relayUpstream: "https://hub:8443" }));
-        expect(loadRunnerConfig({ CARAPA_RUNNER_ROOT: root }).boxId).toBe("legacy");
     });
 });

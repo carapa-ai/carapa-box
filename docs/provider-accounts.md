@@ -8,6 +8,11 @@ Provider consent/MFA still happens in your browser; it is not automated away.
 
 ## One-time operator setup
 
+On a box connected to a hub (its relay runs with `RELAY_MODE=forward`), skip
+this setup on the box: its relay holds no provider credentials and forwards
+every provider call to the hub's relay. Connect accounts on the hub's Board.
+An account connected through the box's own Board is stored but never used.
+
 1. Create an absolute host directory outside **every** sandbox home/workspace
    mount, owned by the Box controller and relay user, mode `0700`. Set
    `PROVIDER_ACCOUNTS_DIR` to that same path in both CarapaBox's `.env` and

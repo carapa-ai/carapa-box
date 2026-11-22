@@ -2,7 +2,7 @@
 
 `Dockerfile.alpine` provides an optional public CarapaBot runtime using the same
 DHI Alpine 3.23 family as CarapaBox. The pinned DHI Node 26 development image
-provides real Node.js; Bun 1.4.2 is copied from the controller's exact pinned DHI
+provides real Node.js; Bun 1.4.4 is copied from the controller's exact pinned DHI
 Bun image. Using the Bun image directly conflicts with Alpine's Node package
 because Bun's package also provides the `node` command.
 

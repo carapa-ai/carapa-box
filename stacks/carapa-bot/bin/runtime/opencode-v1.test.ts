@@ -67,6 +67,18 @@ describe('OpenCode V1 normalization', () => {
     expect(output.at(-1)).toMatchObject({ type: 'run', status: 'completed', stopReason: 'stop' });
   });
 
+  test('puts the nested provider error text in the failed terminal', () => {
+    const root = mkdtempSync(join(tmpdir(), 'carapa-opencode-v1-'));
+    roots.push(root);
+    const writer = new RunV1Writer(root, { format: 'carapa-run', version: 1, harness: 'opencode', requestedModel: null });
+    const adapter = new OpenCodeRunV1Adapter(writer, '', false, 'opencode-run-4-message-1');
+    adapter.consume({ type: 'error', error: { name: 'UnknownError', data: { message: 'Session not found' } } });
+    adapter.finish(1);
+    const output = readFileSync(join(root, 'output.v1.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(output.find((event) => event.type === 'error')).toMatchObject({ message: 'Session not found' });
+    expect(output.at(-1)).toMatchObject({ type: 'run', status: 'failed', error: { message: 'Session not found' } });
+  });
+
   test('does not complete on intermediate tool-calls steps', () => {
     const root = mkdtempSync(join(tmpdir(), 'carapa-opencode-v1-'));
     roots.push(root);

@@ -6,7 +6,7 @@ import { githubApi, validExpiryDate } from '../egress-proxy/api-relay/provider-a
 
 export type UsageWindow = { label: string; usedPercent: number; resetsAt?: number; models?: string[] };
 /** Limit resets the plan has banked: each one refills the usage windows when redeemed in the vendor's own app. */
-export type UsageResets = { available: number; expiresAt?: number };
+type UsageResets = { available: number; expiresAt?: number };
 export type AccountUsage = { windows: UsageWindow[]; plan?: string; resets?: UsageResets; fetchedAt: number } | { error: string; fetchedAt: number };
 
 const pct = (value: unknown) => {
@@ -19,7 +19,7 @@ const seconds = (value: unknown) => {
   return Number.isFinite(n) && n > 0 ? n * 1000 : undefined;
 };
 
-export function parseClaudeUsage(body: any): UsageWindow[] {
+function parseClaudeUsage(body: any): UsageWindow[] {
   // Windows the account does not have are omitted (Max 20x reports no 5-hour
   // window). `seven_day_overage_included` is the Fable-only weekly limit; the
   // Claude CLI names it "Fable limit".
@@ -42,7 +42,7 @@ export function parseClaudeUsage(body: any): UsageWindow[] {
 
 /** Claude's free limit resets (`cedar_ember`, returned only when the request asks for it). Each grant
  * counts its remaining resets until its end; an ineligible account reports none. */
-export function parseClaudeResets(body: any, now = Date.now()): UsageResets | undefined {
+function parseClaudeResets(body: any, now = Date.now()): UsageResets | undefined {
   const grants = body?.cedar_ember?.eligible === false ? [] : body?.cedar_ember?.grants;
   const live = (Array.isArray(grants) ? grants : []).flatMap((g: any) => {
     const left = Math.floor(Number(g?.resets_left)), end = seconds(g?.ends_at);
@@ -54,7 +54,7 @@ export function parseClaudeResets(body: any, now = Date.now()): UsageResets | un
 }
 
 /** Codex's banked rate-limit resets; the expiry times are only on a separate endpoint. */
-export function parseCodexResets(body: any): UsageResets | undefined {
+function parseCodexResets(body: any): UsageResets | undefined {
   const available = Math.floor(Number(body?.rate_limit_reset_credits?.available_count));
   return available > 0 ? { available } : undefined;
 }
@@ -82,7 +82,7 @@ function windowLabel(secondsLong: unknown, fallback: string) {
   return days >= 27 && days <= 32 ? 'Monthly' : `${Math.round(days)}-day`;
 }
 
-export function parseCodexUsage(body: any): UsageWindow[] {
+function parseCodexUsage(body: any): UsageWindow[] {
   const windows: Array<[string, any]> = [['5-hour', body?.rate_limit?.primary_window], ['Weekly', body?.rate_limit?.secondary_window]];
   return windows.flatMap(([fallback, w]) => {
     const usedPercent = pct(w?.used_percent);
@@ -113,7 +113,7 @@ function antigravityWindow(resetsAt: number | undefined, now: number) {
   return resetsAt - now <= 6 * 3600_000 ? '5-hour' : 'Weekly';
 }
 
-export function parseAntigravityUsage(body: any, now = Date.now()): UsageWindow[] {
+function parseAntigravityUsage(body: any, now = Date.now()): UsageWindow[] {
   const families = new Map<string, UsageWindow & { models: string[] }>();
   for (const [id, model] of Object.entries<any>(body?.models ?? {})) {
     // proto3 JSON omits a zero fraction: an exhausted model reports only its reset time.
@@ -147,7 +147,7 @@ export function parseAntigravityUsage(body: any, now = Date.now()): UsageWindow[
 
 /** Grok Build credits: proto3 JSON omits zero values, so a period without a
  * percentage has used none of its allowance. */
-export function parseGrokUsage(body: any): UsageWindow[] {
+function parseGrokUsage(body: any): UsageWindow[] {
   const config = body?.config;
   const period = config?.currentPeriod;
   if (!period) return [];
@@ -179,7 +179,7 @@ export async function providerJson(url: string, init: RequestInit | undefined, h
 
 /** Cursor's included usage for the billing cycle, as its CLI reports it: total,
  * Auto and API shares. Proto3 JSON omits zero values, so a missing share is unused. */
-export function parseCursorUsage(body: any): UsageWindow[] {
+function parseCursorUsage(body: any): UsageWindow[] {
   const plan = body?.planUsage;
   const start = Number(body?.billingCycleStart), end = Number(body?.billingCycleEnd);
   if (!plan || !Number.isFinite(end) || end <= 0) return [];
@@ -224,9 +224,9 @@ export async function fetchAccountUsage(provider: string, headers: Record<string
 /** Mistral's monthly allowances from /v1/billing/budget: the API/Studio
  * allowance and the plan's included Vibe Code usage, each as a usage window
  * with its amount. Only the global host serves it; the EU host has no billing. */
-export const MISTRAL_BUDGET_URL = 'https://api.mistral.ai/v1/billing/budget';
+const MISTRAL_BUDGET_URL = 'https://api.mistral.ai/v1/billing/budget';
 
-export function parseMistralBudget(body: any): UsageWindow[] {
+function parseMistralBudget(body: any): UsageWindow[] {
   const money = (value: number, currency: string) => new Intl.NumberFormat('en', { style: 'currency', currency }).format(value);
   return ([['api_budget', 'API'], ['vibe_budget', 'Vibe Code']] as const).flatMap(([key, name]) => {
     const budget = body?.[key];
@@ -306,10 +306,4 @@ export async function inspectProviderKey(provider: string, key: string, request:
     if (status === 400 && provider === 'anthropic-api' && !workspaceId) return { result: 'needsWorkspace' };
     return { result: [400, 401, 403, 404].includes(status) ? 'rejected' : 'unavailable' };
   } catch { return { result: 'unavailable' }; }
-}
-
-/** Whether the provider accepts an API key before Box installs it. */
-export async function checkProviderKey(provider: string, key: string, request: typeof fetch = fetch,
-  proxy = process.env.PROVIDER_USAGE_PROXY, options: { workspaceId?: string; host?: string } = {}): Promise<KeyCheckResult> {
-  return (await inspectProviderKey(provider, key, request, proxy, options)).result;
 }

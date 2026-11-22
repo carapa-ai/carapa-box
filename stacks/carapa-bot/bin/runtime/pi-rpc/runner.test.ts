@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,7 +7,6 @@ import type { RunContext } from '../contracts';
 import { isAlive } from '../processes';
 import { stopRun } from '../stop';
 import { runPiRpcHarness } from './runner';
-import { adoptLegacyPiSession } from './history';
 
 const roots: string[] = [];
 const runtimeBinDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -139,9 +138,9 @@ process.on('SIGTERM', () => process.exit(0));
       turn.args.conversationKey = '';
       turn.args.conversationId = '';
       const exitCode = await runPiRpcHarness(turn);
-      const output = readFileSync(join(turn.runDir, 'output.jsonl'), 'utf8')
+      const v1 = readFileSync(join(turn.runDir, 'output.v1.jsonl'), 'utf8')
         .trim().split('\n').map((line) => JSON.parse(line));
-      return { exitCode, failure: output.find((event) => event.type === 'turn.failed') };
+      return { exitCode, terminal: v1.at(-1) };
     };
 
     const succeeded = await runWith([
@@ -149,14 +148,22 @@ process.on('SIGTERM', () => process.exit(0));
       { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], stopReason: 'stop' } },
       { type: 'agent_end', messages: [{ role: 'toolResult', content: [{ type: 'text', text: quoted }] }, { role: 'assistant', content: [{ type: 'text', text: 'done' }], stopReason: 'stop' }], willRetry: false },
     ]);
-    expect(succeeded).toEqual({ exitCode: 0, failure: undefined });
+    expect(succeeded).toMatchObject({ exitCode: 0, terminal: { type: 'run', status: 'completed' } });
 
     const providerError = 'provider connection closed unexpectedly';
     const failed = await runWith([
       { type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: providerError } },
       { type: 'agent_end', messages: [{ role: 'assistant', content: [], stopReason: 'error', errorMessage: providerError }], willRetry: false },
     ]);
-    expect(failed).toEqual({ exitCode: 1, failure: { type: 'turn.failed', error: { message: providerError } } });
+    expect(failed).toMatchObject({ exitCode: 1, terminal: { type: 'run', status: 'failed', error: { message: providerError } } });
+
+    // Text that is not a provider failure still reaches the V1 terminal instead of a generic message.
+    const refusal = 'model refused the request';
+    const refused = await runWith([
+      { type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: refusal } },
+      { type: 'agent_end', messages: [{ role: 'assistant', content: [], stopReason: 'error', errorMessage: refusal }], willRetry: false },
+    ]);
+    expect(refused.terminal).toMatchObject({ type: 'run', status: 'failed', error: { message: refusal } });
   });
 
   test('announces a new session only after Pi has saved it', async () => {
@@ -199,12 +206,10 @@ process.on('SIGTERM', () => process.exit(0));
     const failed = turn('failed', true);
     expect(await runPiRpcHarness(failed)).toBe(1);
     expect(lines(join(failed.runDir, 'output.v1.jsonl')).filter((event) => event.type === 'session')).toEqual([]);
-    expect(lines(join(failed.runDir, 'output.jsonl')).filter((event) => event.type === 'thread.started')).toEqual([]);
 
     const saved = turn('saved', false);
     expect(await runPiRpcHarness(saved)).toBe(0);
     expect(lines(join(saved.runDir, 'output.v1.jsonl'))).toContainEqual({ type: 'session', id: 'pi-new-session', status: 'started' });
-    expect(lines(join(saved.runDir, 'output.jsonl'))).toContainEqual({ type: 'thread.started', thread_id: 'pi-new-session' });
   });
 
   test('reuses one Pi process across follow-up turns', async () => {
@@ -261,7 +266,6 @@ process.on('SIGTERM', () => process.exit(0));
       .trim().split('\n').map((line) => JSON.parse(line));
     expect(capture.filter((event) => event.type === 'launch')).toHaveLength(1);
     expect(capture.filter((event) => event.message?.type === 'prompt')).toHaveLength(2);
-    expect(readFileSync(join(second.runDir, 'output.jsonl'), 'utf8')).toContain('"type":"agent_end"');
 
     expect(JSON.parse(readFileSync(join(first.runDir, 'output.v1.meta.json'), 'utf8'))).toEqual({
       format: 'carapa-run',
@@ -417,11 +421,11 @@ process.on('SIGTERM', () => process.exit(0));
     turn.env.CARAPA_PERSIST_TURN_TIMEOUT = '30';
     const running = runPiRpcHarness(turn);
     const v1Path = join(turn.runDir, 'output.v1.jsonl');
-    const outputPath = join(turn.runDir, 'output.jsonl');
+    const rawPath = join(turn.runDir, 'pi.raw.jsonl');
     for (
       let attempt = 0;
       attempt < 200 &&
-      (!await Bun.file(outputPath).exists() || !readFileSync(outputPath, 'utf8').includes('compaction_start'));
+      (!await Bun.file(rawPath).exists() || !readFileSync(rawPath, 'utf8').includes('compaction_start'));
       attempt += 1
     ) {
       await Bun.sleep(10);
@@ -437,23 +441,4 @@ process.on('SIGTERM', () => process.exit(0));
 
     await stopRun(turn.runDir, readFileSync(join(turn.runDir, 'pid'), 'utf8'));
   });
-});
-
-test('an older fresh Pi task resumes from its cwd-scoped history without creating an empty replacement', () => {
-  const root = mkdtempSync(join(tmpdir(), 'carapa-pi-history-')); roots.push(root);
-  const cwd = '/workspace/project';
-  const agentHome = join(root, 'agent-home');
-  const legacy = join(agentHome, 'sessions', '--workspace-project--');
-  mkdirSync(legacy, { recursive: true });
-  const name = '2026-09-01_native-id.jsonl';
-  const history = JSON.stringify({ type: 'session', id: 'native-id', cwd }) + '\n';
-  writeFileSync(join(legacy, name), history);
-  const turn = context(root, 'native-history');
-  turn.cwd = cwd;
-  turn.args.workDir = cwd;
-  turn.env.PI_CODING_AGENT_DIR = agentHome;
-  adoptLegacyPiSession(turn, 'native-id');
-  expect(readFileSync(join(root, 'ipc', 'pi-sessions', name), 'utf8')).toBe(history);
-  expect(existsSync(join(legacy, name))).toBe(true);
-  adoptLegacyPiSession(turn, 'native-id');
 });

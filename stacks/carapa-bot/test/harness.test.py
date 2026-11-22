@@ -71,20 +71,30 @@ class HarnessLifecycle(unittest.TestCase):
             debian = {'harnesses': {'claude': {'version': '1'}}, 'abi': {'libc': ['glibc']}}
             alpine = {'harnesses': {'claude': {'version': '2'}}, 'abi': {'libc': ['musl']}}
             with patch.object(host.HarnessStore, 'verify', return_value=debian):
-                first = host.HarnessStore(stack).select('image-debian', 'debian-volume')
+                first = host.HarnessStore(stack).select('image-debian', 'carapa-harness-live-aaaaaaaaaaaaaaaaaaaaaaaa')
             (stack / '.env').write_text('CARAPA_BOT_IMAGE=carapa-bot:0.1.0-alpine\n')
             with patch.object(host.HarnessStore, 'verify', return_value=alpine):
-                host.HarnessStore(stack).select('image-alpine', 'alpine-volume')
+                host.HarnessStore(stack).select('image-alpine', 'carapa-harness-live-bbbbbbbbbbbbbbbbbbbbbbbb')
             store = host.HarnessStore(stack, 'debian')
             self.assertEqual(store.image_ref, 'carapa-bot:0.1.0')
             self.assertEqual(store.current(), first)
             with patch.object(host.HarnessStore, 'verify', return_value=debian):
-                store.select('image-debian', 'updated-debian-volume')
-            self.assertEqual(host.HarnessStore(stack).current()['volume'], 'alpine-volume')
+                store.select('image-debian', 'carapa-harness-live-cccccccccccccccccccccccc')
+            self.assertEqual(host.HarnessStore(stack).current()['volume'], 'carapa-harness-live-bbbbbbbbbbbbbbbbbbbbbbbb')
             with patch.object(host.HarnessStore, 'verify', return_value=alpine):
                 with self.assertRaisesRegex(ValueError, 'Expected a debian'):
-                    store.select('image-alpine', 'alpine-volume')
-            self.assertEqual(store.current()['volume'], 'updated-debian-volume')
+                    store.select('image-alpine', 'carapa-harness-live-bbbbbbbbbbbbbbbbbbbbbbbb')
+            self.assertEqual(store.current()['volume'], 'carapa-harness-live-cccccccccccccccccccccccc')
+
+    def test_selection_naming_anything_but_a_live_volume_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stack = Path(tmp)
+            (stack / '.harness/active').mkdir(parents=True)
+            (stack / '.harness/active/selection.json').write_text(json.dumps({'volume': 'carapa-bot-harness-' + 'a' * 32}))
+            with self.assertRaisesRegex(ValueError, 'invalid harness volume selection'):
+                host.HarnessStore(stack).current()
+            with self.assertRaisesRegex(ValueError, 'invalid harness volume selection'):
+                host.HarnessStore(stack).select('image', 'carapa-bot-harness-' + 'a' * 32)
 
     def test_failed_candidate_verification_does_not_publish(self):
         from unittest.mock import MagicMock

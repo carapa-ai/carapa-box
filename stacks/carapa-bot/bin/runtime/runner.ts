@@ -77,7 +77,6 @@ async function executePlannedRun(context: RunContext, plan: HarnessPlan, session
     return exitCode;
   }
 
-  const outputFd = openSync(join(context.runDir, 'output.jsonl'), 'w');
   const stderrFd = openSync(join(context.runDir, 'agent-stderr.log'), 'a');
   const inputFd = plan.promptMode === 'stdin'
     ? openSync(join(context.runDir, 'prompt.txt'), 'r')
@@ -113,19 +112,17 @@ async function executePlannedRun(context: RunContext, plan: HarnessPlan, session
       cwd: context.cwd,
       env: context.env,
       detached: true,
-      stdio: [inputFd ?? 'ignore', outputFd, stderrFd],
+      stdio: [inputFd ?? 'ignore', 'ignore', stderrFd],
     });
   } catch (error) {
     for (const sidecar of sidecars) sidecar.kill('SIGTERM');
     if (inputFd !== null) closeSync(inputFd);
-    closeSync(outputFd);
     closeSync(stderrFd);
     throw error;
   }
   if (inputFd !== null) closeSync(inputFd);
   if (!child.pid) {
     for (const sidecar of sidecars) sidecar.kill('SIGTERM');
-    closeSync(outputFd);
     closeSync(stderrFd);
     throw new Error(`failed to launch ${context.args.agentCmd}`);
   }
@@ -139,7 +136,6 @@ async function executePlannedRun(context: RunContext, plan: HarnessPlan, session
   } finally {
     resourceGuard.stop();
     watchers.stop();
-    closeSync(outputFd);
     closeSync(stderrFd);
     for (const sidecar of sidecars) {
       if (sidecar.exitCode === null && sidecar.signalCode === null) sidecar.kill('SIGTERM');
@@ -155,17 +151,6 @@ async function executePlannedRun(context: RunContext, plan: HarnessPlan, session
   signalProcessGroupMembers(child.pid, 'SIGTERM', [process.pid]);
   await Bun.sleep(50);
   signalProcessGroupMembers(child.pid, 'SIGKILL', [process.pid]);
-  if (plan.afterExit) {
-    try {
-      await plan.afterExit(context, exitCode);
-    } catch (error) {
-      const message = error instanceof Error ? error.stack || error.message : String(error);
-      appendFileSync(
-        join(context.runDir, 'agent-stderr.log'),
-        `[agent-runtime] native output normalization failed: ${message}\n`,
-      );
-    }
-  }
   ensureRunTerminal(context, exitCode);
   if (sessionDir) {
     const events = readFileSync(join(context.runDir, 'output.v1.jsonl'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));

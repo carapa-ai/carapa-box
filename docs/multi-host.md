@@ -11,11 +11,11 @@ example a Mac). Only the hub must be reachable; boxes dial out.
    │   ▲ wss /api/boxes/connect  ▲ :RELAY_FORWARDER_PORT (TLS)
    └───┼─────────────────────────┼───────┘
        │ box dials out            │ forwarder dials out (HMAC-signed)
- ┌─────┴──────────────────────────┴──┐   ┌───────────────────────────────┐
- │ Linux box: CarapaBox + squid +    │   │ Mac: os-runner (native)   │
- │ api-relay (RELAY_MODE=forward)    │   │ Claude Code sandbox (Seatbelt) │
- │ IPC, groups, repos on this host   │   │ ~/.os-runner/{ipc,groups,repos} │
- └───────────────────────────────────┘   └───────────────────────────────┘
+ ┌─────┴──────────────────────────┴──┐   ┌─────────────────────────────────────┐
+ │ Linux box: CarapaBox + squid +    │   │ Mac: carapa-runner (native)         │
+ │ api-relay (RELAY_MODE=forward)    │   │ Claude Code sandbox (Seatbelt)      │
+ │ IPC, groups, repos on this host   │   │ ~/.carapa-runner/{ipc,groups,repos} │
+ └───────────────────────────────────┘   └─────────────────────────────────────┘
 ```
 
 ## What lives where
@@ -73,15 +73,123 @@ that shared layout. Remote boxes must see their tree.
 ```
 CARAPA_HUB_URL=wss://board.example.com
 CARAPA_BOX_ID=lab-pc
-CARAPA_HUB_BOX_SECRET=<connection secret>
 IPC_MOUNT=/srv/carapa/ipc                    # also mounted into a containerised Box
 CARAPA_BOX_GROUPS_ROOT=/srv/carapa/groups    # @group/<folder>
 CARAPA_BOX_REPOS_ROOT=/srv/carapa/repos      # @repo/<name>
 ```
 
-Add both roots to `config/mount-allowlist.yaml`. Project settings with host
+Add the IPC, group and repository roots, plus the agent home of the box's
+stacks, to `config/mount-allowlist.yaml`. Project settings with host
 paths (`repositoryLocation`, extra mounts) are interpreted on the box that runs
 the project.
+
+### Connection secret
+
+Box and its relay both read `CARAPA_HUB_BOX_SECRET` from
+`SECRETS_DIR/carapa_hub_box_secret` before the environment. Prefer that file
+(mode 0600) to a plain `.env` value. The base Compose files do not mount it,
+so add a hub override to each project. Controller,
+`~/.carapa-box/box-hub.override.yml` (any path):
+
+```yaml
+services:
+  carapa-box:
+    secrets: [carapa_hub_box_secret]
+secrets:
+  carapa_hub_box_secret:
+    file: ${SECRETS_DIR}/carapa_hub_box_secret
+```
+
+Egress, `egress-proxy/docker-compose.override.hub.yml`:
+
+```yaml
+services:
+  api-relay:
+    secrets: [carapa_hub_box_secret]
+secrets:
+  carapa_hub_box_secret:
+    file: ${SECRETS_DIR}/carapa_hub_box_secret
+```
+
+The egress override must sit in `egress-proxy/` and be listed in
+`COMPOSE_FILE` by a bare `docker-compose*.yml` name. The controller recreates
+egress services itself, from its container's `/app/egress-proxy`, and cannot
+see other host paths. An absolute path there fails every automatic recreation
+with `compose file "…" set by COMPOSE_FILE environment variable` errors in
+Box's log. The `*.override.*.yml` name is gitignored.
+
+If the hub name resolves only through the host's `/etc/hosts` or a resolver
+Docker does not use, add `extra_hosts: ["board.example.com:<hub IP>"]` to
+`carapa-box` and `api-relay` in the same overrides.
+
+Board's browser viewer and shell tab reach the box through its hub connection:
+the box replays those requests against its own HTTP API (only `/api/browser/*`
+and `/api/tmux/*`, with its own `CARAPA_BOX_API_TOKEN`) and advertises the
+`http-tunnel` capability. No inbound port is needed.
+
+`egress-proxy/.env` of that box (forwarder, no provider credentials):
+
+```
+RELAY_MODE=forward
+CARAPA_RELAY_UPSTREAM=https://board.example.com:8443
+CARAPA_BOX_ID=lab-pc
+COMPOSE_FILE=docker-compose.yml:docker-compose.override.hub.yml
+```
+
+When the hub certificate comes from a private CA, add the CA overlay in both
+`.env` files instead of disabling verification. Keep the hub override last:
+
+```
+COMPOSE_FILE=docker-compose.yml:docker-compose.ca.yml:<hub override>
+CARAPA_CA_CERTIFICATE=/etc/carapa/root.crt
+```
+
+### Providers and local models
+
+The forwarder sends every relay request to the hub, which injects the
+credentials. A route works only if the hub holds a credential for it:
+`/openai/` answers `503 No credentials configured for openai` unless the hub
+has an OpenAI API key, while ChatGPT-subscription traffic uses `/codex/`. The
+box's relay does not log successfully forwarded requests.
+
+Local model engines are optional and deployment-specific. Skip this without
+one. `llama-proxy` forwards its `PORTS` to `UPSTREAM_HOST`, which is
+`host.docker.internal` by default. If the engines (llama.cpp, Ollama, vLLM, …)
+run on another host such as the hub, point it there in the egress hub override.
+Otherwise requests fail with `502 connect ECONNREFUSED`. Also check that
+`PORTS` and the harness provider URLs match the ports your engines serve:
+
+```yaml
+services:
+  llama-proxy:
+    environment:
+      UPSTREAM_HOST: "<hub IP>"
+```
+
+### Agent stacks on the box
+
+The hub's Board does not prepare stacks on remote boxes. Before assigning a
+project, on the box:
+
+- install gVisor (`sudo bash scripts/install-gvisor.sh`): `carapa-bot` sets
+  `runtime: runsc`, and without it starts fail with
+  `unknown or invalid runtime name: runsc`;
+- create the stack's `.env` with its `AGENT_HOME`, build the image and install
+  harnesses (`stacks/carapa-bot/README.md`, *Installation*). A missing
+  `.harness/active/selection.json` fails the start with *Prepare the public
+  image and harness selection*;
+- give Codex the relay provider in `$AGENT_HOME/.codex/config.toml`
+  ([Codex config.toml](api-relay-setup.md#codex-configtoml)). Without it Codex
+  calls `api.openai.com` directly and gets `401 Missing bearer`.
+
+### Rotating the connection secret
+
+After *Regenerate* on the hub, the hub drops the box (Box logs
+`[hub] Hub revoked this box; not reconnecting until restart`). Replace
+`carapa_hub_box_secret`, then restart `carapa-box` and `api-relay`; both read the
+secret only at startup. `api-relay` drains in-flight requests for up to its
+960-second stop timeout, so close the box's chats first or restart Box
+separately before the relay.
 
 Board's browser viewer and shell tab reach the box through its hub connection:
 the box replays those requests against its own HTTP API (only `/api/browser/*`
@@ -105,20 +213,20 @@ COMPOSE_FILE=docker-compose.yml:docker-compose.ca.yml
 CARAPA_CA_CERTIFICATE=/etc/carapa/root.crt
 ```
 
-## Mac native runner (`os-runner`)
+## Mac native runner (`carapa-runner`)
 
 Requirements: Bun, git, Node.js (for `playwright-cli`), tmux (`brew install tmux`,
 for Board's shell tab), the harness CLIs you use (e.g. `claude`) on `PATH`, and a
 checkout of this repository with `bun install` (the runner reuses
 `stacks/carapa-bot/bin` and the pinned `@playwright/cli`).
 
-`~/.os-runner/config.json`:
+`~/.carapa-runner/config.json`:
 
 ```json
 {
   "hubUrl": "wss://board.example.com",
   "boxId": "mac",
-  "credentialFile": "/Users/me/.os-runner/state/box-secret",
+  "credentialFile": "/Users/me/.carapa-runner/state/box-secret",
   "relayUpstream": "https://board.example.com:8443",
   "relayPort": 18080,
   "allowedRoots": ["/Users/me/code"],
@@ -126,12 +234,12 @@ checkout of this repository with `bun install` (the runner reuses
 }
 ```
 
-`bun run os-runner` fast-forwards the checkout and reinstalls dependencies when the
+`bun run runner` fast-forwards the checkout and reinstalls dependencies when the
 lockfile changed, then starts; set `RUNNER_AUTO_UPDATE=0` to skip. To update a
-running runner, stop it (Ctrl-C) and run `bun run os-runner` again. The version the
+running runner, stop it (Ctrl-C) and run `bun run runner` again. The version the
 runner reports to the hub is the checkout's git commit. When the hub certificate comes from a private CA, put
-its root at `~/.os-runner/carapa-root-ca.crt` (or under `OS_RUNNER_ROOT`);
-`bun run os-runner` then sets `NODE_EXTRA_CA_CERTS` to it unless already set (Bun
+its root at `~/.carapa-runner/carapa-root-ca.crt` (or under `CARAPA_RUNNER_ROOT`);
+`bun run runner` then sets `NODE_EXTRA_CA_CERTS` to it unless already set (Bun
 does not read the macOS keychain). The runner:
 
 - serves the run, IPC, group, git and relay-credential tools over the hub
@@ -215,7 +323,7 @@ does not read the macOS keychain). The runner:
   write `.mcp.json` for native projects. No Claude login or provider
   credential is stored on the Mac.
 
-## Linux runner with OpenShell sandboxes (`os-runner`, `openshell` backend)
+## Linux runner with OpenShell sandboxes (`carapa-runner`, `openshell` backend)
 
 > **Experimental.** OpenShell support (Docker and VM drivers, the Brain stack)
 > is new and tested on one host only. Configuration, behaviour and the required
@@ -257,7 +365,7 @@ Requirements:
   The gateway checks bind sources in **its own** filesystem. Run it as a host
   process or user service (not under a private `/tmp`), or, if it runs in a
   container, mount the runner root, the checkout's `stacks/carapa-bot/bin` and
-  `src/os-runner` into it at the same paths. Keep the runner root outside `/tmp`.
+  `src/runner` into it at the same paths. Keep the runner root outside `/tmp`.
   OpenShell sends anonymous telemetry by default. To turn it off, set
   `OPENSHELL_TELEMETRY_ENABLED=false` in the gateway's environment (there is no
   `gateway.toml` key): for the packaged user service, add it to
@@ -265,14 +373,14 @@ Requirements:
   `systemctl --user restart openshell-gateway`. The gateway passes it on to the
   sandbox supervisors.
 
-`~/.os-runner/config.json` (the fields of the Mac runner still apply; the
+`~/.carapa-runner/config.json` (the fields of the Mac runner still apply; the
 runner root and `allowedRoots` hold the project directories):
 
 ```json
 {
   "hubUrl": "wss://board.example.com",
   "boxId": "lab-os",
-  "credentialFile": "/home/me/.os-runner/state/box-secret",
+  "credentialFile": "/home/me/.carapa-runner/state/box-secret",
   "relayUpstream": "https://board.example.com:8443",
   "relayPort": 18080,
   "openshell": {
@@ -377,7 +485,7 @@ What differs from the Docker driver:
   mounted with a `subpath` becomes a symlink in the rootfs into the whole-volume mount, and
   `/usr/local/ai-cli-bin` is one too. Which directories of the root a project may touch is the Landlock
   policy's job: other projects' directories and everything outside the root are unreachable (checked).
-- So `stateDir` (set it, or `OS_RUNNER_STATE_DIR`) must lie **outside** `root`, as must the config
+- So `stateDir` (set it, or `CARAPA_RUNNER_STATE_DIR`) must lie **outside** `root`, as must the config
   file holding the hub secret, and every project directory (`@group`, `@repo`, extra mounts) must be
   under `root`: `allowedRoots` outside it are refused.
 - `cpu`/`memory` are the gateway's `vcpus`/`mem_mib`.
@@ -431,7 +539,7 @@ that opens the repository on the host runs them.
   run a task; confirm Board MCP and model calls go through forwarder → central
   relay; cut the network mid-run and restore it; stop/cancel work.
 - Mac runner: same checks; confirm a write outside the worktree is blocked by
-  the sandbox and that `~/.os-runner` holds no provider credentials.
+  the sandbox and that `~/.carapa-runner` holds no provider credentials.
 - OpenShell runner: same checks; confirm a write outside the project mounts and
   a request to any host but `host.openshell.internal:<relayPort>` are refused
   inside the sandbox, and that Board's model and MCP calls reach the central

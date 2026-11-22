@@ -1,9 +1,8 @@
 /**
  * Configuration of the native (Docker-less) runner, e.g. on a Mac.
  *
- * Read from ~/.os-runner/config.json (or OS_RUNNER_CONFIG), with
- * environment overrides. The former names (~/.carapa-runner, CARAPA_RUNNER_*)
- * still work. The runner keeps everything under one root:
+ * Read from ~/.carapa-runner/config.json (or CARAPA_RUNNER_CONFIG), with
+ * environment overrides. The runner keeps everything under one root:
  *   <root>/ipc/<project>      Box-owned IPC trees (replicated by Board)
  *   <root>/groups/<folder>    group directories of projects placed here
  *   <root>/repos/<name>       repositories (@repo/<name>)
@@ -16,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 
 /** An extra mount of an OpenShell sandbox (e.g. the harness volume). Bind sources must be daemon-host paths. */
-export interface OpenShellMount {
+interface OpenShellMount {
     type: "bind" | "volume";
     source: string;
     target: string;
@@ -199,15 +198,8 @@ function parseOpenShell(raw: NonNullable<FileConfig["openshell"]>): OpenShellCon
     return config;
 }
 
-/** An OS_RUNNER_* variable, else its former CARAPA_RUNNER_* name. */
-const runnerEnv = (env: NodeJS.ProcessEnv, name: string): string | undefined => env[`OS_RUNNER_${name}`] || env[`CARAPA_RUNNER_${name}`] || undefined;
-
-/** ~/.os-runner, or the former ~/.carapa-runner while only that exists. */
-function defaultRoot(home: string): string {
-    const current = path.join(home, ".os-runner");
-    const former = path.join(home, ".carapa-runner");
-    return !fs.existsSync(current) && fs.existsSync(former) ? former : current;
-}
+/** A CARAPA_RUNNER_* variable. */
+const runnerEnv = (env: NodeJS.ProcessEnv, name: string): string | undefined => env[`CARAPA_RUNNER_${name}`] || undefined;
 
 /** The real path when it exists: a checkout reached through a symlink must have one path (the VM mounts it once). */
 function realPathOr(target: string): string {
@@ -216,7 +208,7 @@ function realPathOr(target: string): string {
 
 export function loadRunnerConfig(env: NodeJS.ProcessEnv = process.env): RunnerConfig {
     const home = os.homedir();
-    const root = path.resolve(runnerEnv(env, "ROOT") || defaultRoot(home));
+    const root = path.resolve(runnerEnv(env, "ROOT") || path.join(home, ".carapa-runner"));
     const file = readFileConfig(runnerEnv(env, "CONFIG") || path.join(root, "config.json"));
     const credentialFromFile = file.credentialFile ? fs.readFileSync(file.credentialFile, "utf8").trim() : "";
     const config: RunnerConfig = {

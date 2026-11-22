@@ -4,7 +4,7 @@ import net from 'node:net';
 import dns from 'node:dns/promises';
 import fs from 'node:fs/promises';
 
-export function ipv4(value) {
+function ipv4(value) {
   if (net.isIP(value) !== 4) throw new Error('Expected IPv4 address');
   return value.split('.').reduce((n, part) => n * 256 + Number(part), 0);
 }
@@ -18,7 +18,7 @@ export function cidr(value) {
   return [first, first + size - 1];
 }
 
-export function matches(address, ranges) {
+function matches(address, ranges) {
   const n = ipv4(address);
   return ranges.some(([first, last]) => first <= n && n <= last);
 }

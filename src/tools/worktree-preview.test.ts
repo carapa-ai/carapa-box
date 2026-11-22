@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { buildPreviewSyncScript, isOwnedPreviewConf, parsePreviewConfName, previewConfName } from './worktree-preview.js';
+import { buildPreviewSyncScript, parsePreviewConfName, previewConfName } from './worktree-preview.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'carapa-wt-preview-'));
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -31,13 +31,9 @@ test('conf names carry owner and branch and parse back', () => {
     expect(parsePreviewConfName('demo-site-admin@task-1.conf')).toEqual({ owner: 'demo-site-admin', branch: 'task-1' });
     expect(parsePreviewConfName('legacy-branch.conf')).toBeUndefined();
     expect(parsePreviewConfName('demo-site--running.conf')).toBeUndefined();
-    expect(isOwnedPreviewConf('demo-site@x.conf', 'demo-site')).toBe(true);
-    expect(isOwnedPreviewConf('demo-site-admin@x.conf', 'demo-site')).toBe(false);
-    expect(isOwnedPreviewConf('demo-site-admin-@x.conf', 'demo-site-admin')).toBe(false);
-    expect(isOwnedPreviewConf('x.conf', 'demo-site')).toBe(false);
 });
 
-test('add in one instance never prunes another instance or legacy confs', () => {
+test('add in one instance never prunes another instance or unprefixed confs', () => {
     const dir = path.join(root, 'shared');
     fs.mkdirSync(dir);
     fs.writeFileSync(path.join(dir, 'legacy-task.conf'), conf(8081));
@@ -51,7 +47,7 @@ test('add in one instance never prunes another instance or legacy confs', () => 
     expect(fs.readdirSync(dir).sort()).toEqual([
         'demo-site-admin@running.conf', 'demo-site@fresh.conf', 'demo-site@kept.conf', 'legacy-task.conf',
     ]);
-    // Foreign and legacy ports stay reserved (8081, 8082); the pruned 8083 is free again.
+    // Foreign and unprefixed ports stay reserved (8081, 8082); the pruned 8083 is free again.
     expect(port).toBe(8083);
     expect(fs.readFileSync(path.join(dir, 'demo-site@fresh.conf'), 'utf8')).toContain('listen 8083;');
 });
@@ -74,11 +70,11 @@ test('unknown live set skips pruning', () => {
     expect(fs.existsSync(path.join(dir, 'demo-site@other.conf'))).toBe(true);
 });
 
-test('owners that differ only by hyphens never touch each other, nor legacy files that look prefixed', () => {
+test('owners that differ only by hyphens never touch each other, nor unprefixed files that look prefixed', () => {
     const dir = path.join(root, 'hyphens');
     fs.mkdirSync(dir);
     fs.writeFileSync(path.join(dir, 'demo-site-admin-@running.conf'), conf(8081));
-    fs.writeFileSync(path.join(dir, 'demo-site--running.conf'), conf(8082)); // legacy branch "demo-site--running"
+    fs.writeFileSync(path.join(dir, 'demo-site--running.conf'), conf(8082)); // unprefixed branch "demo-site--running"
     fs.writeFileSync(path.join(dir, 'demo-site-admin--blue@live.conf'), conf(8083));
     const a = run(dir, 'demo-site-admin', 'x', ['x']);
     const b = run(dir, 'demo-site', 'running', ['running']);

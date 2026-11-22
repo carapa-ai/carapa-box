@@ -116,13 +116,27 @@ CarapaBox requires Docker on the host. Bun is only needed if you are running the
 - **Agent harnesses** (Claude Code, Codex and others) are not bundled. They run on your own provider subscriptions or API keys; see [API credential relay](#api-credential-relay) and [provider accounts](docs/provider-accounts.md).
 - **Agent image**: No prebuilt image is published for the alpha. Build it locally with `stacks/rebuild-agents.sh` (or `stacks/carapa-bot/build.sh`), which builds `carapa-bot:0.1.0` and then scans it for CVEs; the scan needs `trivy` or `docker scout`, or pass `--no-scan` for a development build.
 
-## Guided setup
+## Guided setup (strongly recommended)
 
-Use the repository [setup skill](.agent/skills/setup/SKILL.md) for a new or
-existing installation. It covers hardened container deployment, host development,
-controller authentication, approved mounts, and optional egress/provider setup.
-It reuses the existing build and security installers and preserves existing
-configuration. Run its read-only inventory from this checkout:
+**Set up with a coding agent rather than by hand.** Secrets, generated state,
+AppArmor and gVisor, the egress relay and provider accounts must all line up,
+and a missed step often shows up only later: an agent that never starts, or a
+chat that spins on a relay 401. The setup skill checks each step as it goes.
+
+- **Box and Board together (most users):** use CarapaBoard's setup skill. It
+  installs both and walks through every agent harness, from provider account to
+  a verified chat. See [CarapaBoard's README](https://github.com/carapa-ai/carapa-board#set-up-with-an-agent-strongly-recommended).
+- **CarapaBox alone:** open this checkout in Claude Code, Codex, or another agent
+  that reads `.claude/skills` or `.agents/skills`, and ask it to set up CarapaBox.
+  In Claude Code, run `/setup`.
+
+The agent asks before privileged changes and never needs credentials pasted into
+chat. The [setup skill](.agent/skills/setup/SKILL.md) covers new and existing
+installations: hardened container deployment, host development, controller
+authentication, approved mounts, and optional egress/provider setup. It reuses
+the existing build and security installers and preserves existing configuration.
+The helpers below are what it runs; you can also run them yourself. Read-only
+inventory from this checkout:
 
 ```bash
 bash .agent/skills/setup/scripts/inspect-setup.sh
@@ -153,45 +167,66 @@ operator host, never inside an agent sandbox.
 
 ## Quick Start
 
+The manual steps below are what the [guided setup](#guided-setup-strongly-recommended) runs for you; prefer running it with an agent.
+
 ### Production (Container Mode) — Recommended
 
 Ensures a hardened, read-only environment with seccomp and AppArmor profiles enforced.
 
 ```bash
-# 1. Choose where to store secrets
-export SECRETS_DIR="$HOME/.carapa/secrets"
-mkdir -p "${SECRETS_DIR}/box"
-mkdir -p "${SECRETS_DIR}/egress"
+# 0. Get the code
+git clone <carapa-box repository URL> carapa-box && cd carapa-box
 
-# 2. Configure
+# 1. Choose where to store secrets (one directory per Compose project)
+SECRETS_ROOT="$HOME/.carapa/secrets"
+mkdir -p "${SECRETS_ROOT}/box" "${SECRETS_ROOT}/egress"
+
+# 2. Configure the controller; its SECRETS_DIR is the box directory itself
 cp .env.example .env
 sed -i "s|^SANDBOX_HOST_DIR=.*|SANDBOX_HOST_DIR=$(pwd)|" .env
+sed -i "s|^# SECRETS_DIR=.*|SECRETS_DIR=${SECRETS_ROOT}/box|" .env
 echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" >> .env
 nano .env   # review settings
 
-# 3. Configure egress-proxy
+# 3. Configure egress-proxy; provider keys are files in its SECRETS_DIR, not .env values
 cp egress-proxy/.env.example egress-proxy/.env
-sed -i "s|^# SECRETS_DIR=.*|SECRETS_DIR=${SECRETS_DIR}|" egress-proxy/.env
-nano egress-proxy/.env   # review & set API keys
+sed -i "s|^# SECRETS_DIR=.*|SECRETS_DIR=${SECRETS_ROOT}/egress|" egress-proxy/.env
+nano egress-proxy/.env   # review settings
 
-# 4. Generate missing, separate API and admin tokens (preserves existing credentials)
-bash .agent/skills/setup/scripts/ensure-controller-secrets.sh --secrets-dir "${SECRETS_DIR}/box"
-# The controller Compose project expects SECRETS_DIR to point directly to this box directory.
+# 4. Generate missing, separate API and admin tokens (preserves existing credentials),
+#    and give the egress relay the same API token for sandboxes
+bash .agent/skills/setup/scripts/ensure-controller-secrets.sh --secrets-dir "${SECRETS_ROOT}/box"
+install -m 600 "${SECRETS_ROOT}/box/carapa_box_api_token" "${SECRETS_ROOT}/egress/carapa_box_api_token"
 
 # 5. Configure mount allowlist (deny-by-default)
 cp config/mount-allowlist.example.yaml config/mount-allowlist.yaml
 nano config/mount-allowlist.yaml   # add your workspace directories
 cp config/policies/network-base.example.yaml config/policies/network-base.yaml   # domains all sandboxes may reach
 
-# 6. Security
+# 6. Create generated state as your user. Otherwise Docker creates the missing
+#    bind sources as root, squid-generated.conf as a directory, and squid fails
+mkdir -p generated/{audit,nginx-routes,ingress,ipc,groups}
+touch generated/squid-generated.conf
+[ -e egress-proxy/tool_profiles.jsonc ] || cp egress-proxy/tool_profiles.example.jsonc egress-proxy/tool_profiles.jsonc
+
+# 7. Security
 sudo bash security/install-apparmor.sh    # AppArmor profiles for infrastructure services
 sudo bash scripts/install-gvisor.sh       # gVisor runtime for agent containers
 
-# 7. Build & Run (policies are compiled automatically on first start)
+# 8. Build (compiles the policies and scans the images for CVEs) and run.
+#    The controller starts the egress-proxy stack itself.
 bash egress-proxy/build.sh
 bash build.sh
 docker compose up -d
+
+# 9. Verify health and authentication
+bash .agent/skills/setup/scripts/check-controller.sh --url http://127.0.0.1:3100 \
+  --token-file "${SECRETS_ROOT}/box/carapa_box_api_token" \
+  --admin-token-file "${SECRETS_ROOT}/box/carapa_box_admin_token"
 ```
+
+Add provider keys as files in `${SECRETS_ROOT}/egress` (for example
+`anthropic_api_key`); `egress-proxy/build.sh` creates empty placeholders for the rest.
 
 ### Development (Host Mode)
 
@@ -216,6 +251,36 @@ bun run start:http
 Policy `.rego` sources are versioned; generated `.wasm` files are ignored.
 Compile them after cloning or changing policies. The Docker `build.sh` workflow
 compiles them automatically; CI compiles and validates the generated binaries.
+
+### Uninstall
+
+The uninstaller prints its plan and changes nothing until you add `--yes`:
+
+```bash
+# Containers, networks and Compose volumes of the controller, egress proxy and
+# every stack the controller launched (plus the host-mode systemd user service)
+bash .agent/skills/setup/scripts/uninstall.sh --yes
+
+# Opt in to more: built images and the installed agent CLIs (--images),
+# generated install state (.env files, compiled policies, mount allowlist,
+# generated/, configured IPC/state dirs), and secrets: the files the Compose
+# files declare under each SECRETS_DIR plus the provider-account store
+# (signed-in accounts and API keys)
+bash .agent/skills/setup/scripts/uninstall.sh --images --state --secrets --yes
+
+# A quick-installer deployment runs from its deploy directory
+bash .agent/skills/setup/scripts/uninstall.sh --repo-root ~/.carapa/deploy/carapa-box \
+  --egress-dir ~/.carapa/deploy/egress-proxy --images --state --secrets --yes
+
+# Host components, as root and on their own: AppArmor profiles and gVisor
+sudo bash .agent/skills/setup/scripts/uninstall.sh --host --yes
+```
+
+Group directories (`CARAPA_BOX_GROUPS_ROOT`), agent homes, override files
+outside the checkout and CarapaBoard are never removed; the plan lists them.
+To remove Box and Board together, use CarapaBoard's uninstaller with
+`--with-box`.
+Unrelated files in a secrets directory are kept, and the directory stays.
 
 ## Transport Modes
 
@@ -852,6 +917,8 @@ bun run test:docker
 # Build/Rebuild a specific sandbox stack (Docker)
 bun run build <stack_name>
 ```
+
+`bun run knip` reports unused files, exports and dependencies (config: `knip.jsonc`); it is the full report and exits non-zero while findings remain. `verify:changed` gates only unused files and dependencies (plus unlisted, binaries and unresolved) via `bun run knip:gate`.
 
 `bun run verify:changed` reuses an earlier pass when the working tree, merge-base and verifier scripts are unchanged; set `CARAPA_VERIFY_REUSE=0` to force a fresh run.
 

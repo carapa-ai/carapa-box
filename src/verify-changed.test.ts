@@ -60,7 +60,7 @@ function makeRepo() {
     fs.mkdirSync(home);
     const files: Record<string, string> = {
         "package.json": JSON.stringify({
-            scripts: { typecheck: "echo typecheck-ok", "policy:test": "echo policy-ok" },
+            scripts: { typecheck: "echo typecheck-ok", "knip:gate": "echo knip-ok", "policy:test": "echo policy-ok" },
         }),
         "README.md": "# demo\n",
         "src/a.ts": "export const a = 1;\n",
@@ -141,7 +141,7 @@ describe("scripts/verify-changed.sh", () => {
         write(
             "package.json",
             JSON.stringify({
-                scripts: { typecheck: "echo typecheck-ok", "policy:test": "echo policy-ok" },
+                scripts: { typecheck: "echo typecheck-ok", "knip:gate": "echo knip-ok", "policy:test": "echo policy-ok" },
                 private: true,
             }),
         );

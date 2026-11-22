@@ -200,9 +200,9 @@ services:
       # Mounted under /app/** because the shared carapabox-proxy apparmor
       # profile only allow-lists /app, /tmp, /var/log, /run for writes —
       # /captures at the root would EACCES even with chmod 777 on the host.
-      - ${EGRESS_SOURCE_DIR:-.}/captures:/app/captures:rw
+      - ${EGRESS_SOURCE_DIR:-${STACK_DIR:-.}}/captures:/app/captures:rw
       # Profile-keyed tool stripping. SIGHUP the container to reload after edits.
-      - ${EGRESS_CONFIG_DIR:-.}/tool_profiles.jsonc:/app/tool_profiles.jsonc:ro
+      - ${EGRESS_CONFIG_DIR:-${STACK_DIR:-.}}/tool_profiles.jsonc:/app/tool_profiles.jsonc:ro
     environment:
       PORTS: "3001,8881,11434,12434"
       UPSTREAM_HOST: "host.docker.internal"

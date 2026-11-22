@@ -1,0 +1,55 @@
+{
+    "$schema": "https://unpkg.com/knip@6/schema.json",
+    // One project for the whole repository. stacks/carapa-bot/bin/runtime has its own tsconfig for
+    // `bun run typecheck`, but its imports resolve the same way here, so it is not a separate workspace.
+    // Entries that `package.json` scripts already imply (src/index.ts, src/runner/main.ts,
+    // src/test-docker.ts, src/test-worktree.ts) are detected by knip and not repeated.
+    "entry": [
+        // MCP server `bun run start|dev` is detected; the CLI is only bundled (`bun run bundle`, Dockerfile).
+        "src/cli.ts",
+        // Tests, and fixtures that tests start as child processes.
+        "**/*.test.{ts,mjs}",
+        "src/*.fixture.ts",
+        "stacks/carapa-bot/bin/runtime/**/fixtures/*-peer.ts",
+        // Started from compose files and Dockerfiles, not from src.
+        "egress-proxy/api-relay/api-relay.mjs",
+        "egress-proxy/provider-login/worker.mjs",
+        // Runs in the provider-login helper container (BROWSER=node /helper/browser.mjs).
+        "egress-proxy/provider-login/browser.mjs",
+        "egress-proxy/llama-proxy.mjs",
+        "egress-proxy/diff-captures.mjs",
+        "ingress-proxy/main.mjs",
+        // Run by package.json scripts or shell scripts.
+        "scripts/*.{ts,mjs}",
+        "scripts/plugin-tests/*.mjs",
+        // CarapaBot release copy: files that stacks/carapa-bot/bin wrappers or the runtime spawn by path.
+        "stacks/carapa-bot/bin/runtime/main.ts",
+        "stacks/carapa-bot/bin/runtime/terminal-cli.ts",
+        "stacks/carapa-bot/bin/runtime/agent-view.ts",
+        "stacks/carapa-bot/bin/runtime/prune-ipc.ts",
+        "stacks/carapa-bot/bin/runtime/agy-sdk-runner.ts",
+        "stacks/carapa-bot/bin/runtime/opencode-runner.ts",
+        "stacks/carapa-bot/bin/runtime/codex-app-server/main.ts",
+        "stacks/carapa-bot/bin/runtime/protocol/supervisor.ts",
+        "stacks/carapa-bot/bin/*.{cjs,mjs}",
+        "stacks/carapa-bot/check-harness.mjs"
+    ],
+    "project": [
+        "**/*.{ts,tsx,js,mjs,cjs}",
+        "!dist/**",
+        "!generated/**",
+        "!public/**",
+        "!node_modules/**"
+    ],
+    // Dev tools that are used without an import or a package.json script.
+    "ignoreDependencies": [
+        // Reached by path: node_modules/@playwright/cli/playwright-cli.js (src/runner/projects.ts).
+        "@playwright/cli",
+        // Run as `bun x mcporter` in src/test-docker.ts.
+        "mcporter"
+    ],
+    // Host tools the code shells out to.
+    "ignoreBinaries": ["openssl", "opa", "opencode"],
+    // Exported only because the declaration emit of src/compose/client.ts (getStackStatus) names it (TS4023).
+    "ignoreIssues": { "src/compose/status-reader.ts": ["types"] }
+}

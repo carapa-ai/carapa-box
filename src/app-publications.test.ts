@@ -189,7 +189,7 @@ test('status reports routeMissing instead of a ready URL once a project evicted 
             directory,
             enabled: () => true,
             proxyEnabled: () => true,
-            migrate: async () => {},
+            requireSandbox: async () => {},
             reserve: async () => 22000,
             wait: async () => {},
             endpoints: async () => [{ kind: 'http', service: 'agent', targetPort: 3000, port: 22000 }],
@@ -218,12 +218,13 @@ test('published hostnames list only names nginx routes to the project: its route
     await withProxyDir(async (dir) => {
         const settings = { ENABLE_INGRESS_PROXY: 'true', INGRESS_STATE_DIR: path.join(dir, 'ingress'), INGRESS_PUBLIC_HOST: '192.168.1.10', INGRESS_STATE_HOST_DIR: '/private/ingress', INGRESS_HTTP_ALLOW_CIDRS: '172.19.0.2/32', INGRESS_SSH_ALLOW_CIDRS: '192.168.1.0/24' };
         const previous = Object.fromEntries(Object.keys(settings).map((key) => [key, process.env[key]]));
+        const reload = async () => {};
+        // The project's own route is registered through published ports, before ingress is enabled.
+        await fs.mkdir(path.join(dir, 'stack-demo'));
+        await registerNginxProxyRoute(path.join(dir, 'stack-demo'), 'demo', execCompose, undefined, reload);
         Object.assign(process.env, settings);
         try {
             const directory = settings.INGRESS_STATE_DIR;
-            const reload = async () => {};
-            await fs.mkdir(path.join(dir, 'stack-demo'));
-            await registerNginxProxyRoute(path.join(dir, 'stack-demo'), 'demo', execCompose, undefined, reload);
             await fs.mkdir(path.join(directory, 'compose'), { recursive: true });
             await fs.mkdir(path.join(directory, 'targets'));
             await fs.writeFile(path.join(directory, 'compose', 'demo.json'), JSON.stringify({ services: { agent: {} } }));
@@ -233,7 +234,7 @@ test('published hostnames list only names nginx routes to the project: its route
                 directory,
                 enabled: () => true,
                 proxyEnabled: () => true,
-                migrate: async () => {},
+                requireSandbox: async () => {},
                 reserve: async () => port++,
                 wait: async () => {},
                 endpoints: async () => [],

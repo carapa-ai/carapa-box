@@ -143,3 +143,17 @@ test('Claude final usage reports the cache lifetime of the latest request that w
     expect(events.filter(event => event.scope === 'incremental').every(event => !('cacheTtlSeconds' in event))).toBe(true);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('an interrupted Claude terminal keeps the runtime error it was given but never the remembered result text', () => {
+  const finished = (error?: string) => {
+    const root = mkdtempSync(join(tmpdir(), 'carapa-claude-interrupted-'));
+    try {
+      const adapter = new ClaudeRunV1Adapter(new RunV1Writer(root, { format: 'carapa-run', version: 1, harness: 'claude', requestedModel: 'opus' }), 'opus', false);
+      adapter.consume({ type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['provider text'], session_id: 'claude-session' });
+      adapter.finish(1, true, error);
+      return readFileSync(join(root, 'output.v1.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line)).at(-1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  };
+  expect(finished('Claude stream-json process disconnected')).toMatchObject({ status: 'interrupted', error: { message: 'Claude stream-json process disconnected' } });
+  expect(finished()).not.toHaveProperty('error');
+});

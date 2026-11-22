@@ -80,6 +80,7 @@ export class PiRunV1Adapter {
   private readonly toolOutput = new Map<string, string>();
   private currentModel: string;
   private lastStopReason = 'stop';
+  private lastErrorMessage = '';
   private started = false;
 
   constructor(
@@ -178,6 +179,11 @@ export class PiRunV1Adapter {
     return this.lastStopReason;
   }
 
+  /** Provider text of the latest assistant message that stopped with an error. */
+  get errorMessage(): string {
+    return this.lastErrorMessage;
+  }
+
   get runStatus(): RunV1TerminalStatus {
     return terminalStatus(this.lastStopReason);
   }
@@ -222,6 +228,8 @@ export class PiRunV1Adapter {
     const id = this.observeMessage(message);
     const stopReason = string(message.stopReason) ?? 'stop';
     this.lastStopReason = stopReason;
+    // Like the stop reason, the failure text belongs to the latest assistant message only.
+    this.lastErrorMessage = stopReason === 'error' ? string(message.errorMessage) ?? '' : '';
     this.observeModel(string(message.responseModel, message.model));
     const content = textFromContent(message.content) || this.partialText.get(id) || '';
     const status = terminalStatus(stopReason) === 'interrupted' ? 'interrupted' : 'completed';

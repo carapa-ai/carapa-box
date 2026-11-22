@@ -110,7 +110,7 @@ function buildWorkspaceView(view: string, workspacePath: string, repoDir: string
  * inside the project's Seatbelt profile, and macOS cannot nest a second
  * Seatbelt sandbox, so Claude Code's own Bash sandbox stays off.
  */
-export function claudeSettings() {
+function claudeSettings() {
     return { sandbox: { enabled: false } };
 }
 

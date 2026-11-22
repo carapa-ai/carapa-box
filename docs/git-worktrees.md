@@ -155,8 +155,6 @@ no preview.
   (`.preview.lock`), so concurrent `add`/`reset` calls from different instances
   serialize; if the lock cannot be taken within 60 s the call creates no
   preview (a lock older than 5 minutes counts as stale).
-- Legacy unprefixed `<branch>.conf` files (no `@`) are left in place and keep their port
-  reserved. They are never pruned; delete them by hand when no longer needed.
 - `sandbox_ps` lists only the previews of the instance it reports.
 
 The port is written to `<worktree>/.preview-url` as `http://nginx:<port>/`

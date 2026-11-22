@@ -235,6 +235,9 @@ fi
 # --- 2. Typecheck.
 run_phase "typecheck" bun run typecheck
 
+# --- 2b. Dead code. Unused files and dependencies only, on every run: any change can leave a file unused.
+run_phase "knip:gate" bun run knip:gate
+
 # --- 3/4/6. Test selection.
 declare -A SELECTED=()
 declare -A OWNED=()

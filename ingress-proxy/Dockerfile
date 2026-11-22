@@ -13,8 +13,8 @@ RUN mkdir -p /deps/usr/bin /deps/usr/lib && \
     done
 
 # ── Runtime stage — DHI distroless Alpine ───────────────────────────────
-# dhi.io/alpine-base:3.23 — pinned 2026-09-22 (same pin as api-relay)
-FROM dhi.io/alpine-base:3.23@sha256:b9d3f74989db66757080994a59c89268bd2e72e83b5d4784969addec65ab3530
+# dhi.io/alpine-base:3.23 — pinned 2026-11-21 (same pin as api-relay)
+FROM dhi.io/alpine-base:3.23@sha256:8a14cb527704fd6325fae6e92e0bc73a3c64b44a83c36a3abb53730c5757cc72
 
 COPY --from=build /deps/usr/bin/node /usr/bin/node
 COPY --from=build /deps/usr/lib/ /usr/lib/

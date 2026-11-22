@@ -71,7 +71,6 @@ export const hermesAcpContract: AcpHarnessContract = {
   id: 'hermes-acp',
   restore: 'load',
   restoreFailure: 'new-session',
-  reportModel: true,
   prepare(context) {
     if (isCodexRelay(context)) prepareHermesCodexRelay(context);
     else prepareHermesProviderState(context);

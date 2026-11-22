@@ -8,14 +8,11 @@ export interface Watchers {
   stop(): void;
 }
 
-const outputRetryable = /"(?:api_)?error_status":(?:429|503|529)/;
-const outputFatal = /"(?:api_)?error_status":[45]\d\d|"error":"unknown"/;
 const stderrRetryable = /API Error: (?:429|503|529)/;
 const stderrFatal = /API Error: [45]\d\d/;
 
-export function shouldStopOnApiError(output: string, stderr: string): boolean {
-  return (outputFatal.test(output) || stderrFatal.test(stderr))
-    && !(outputRetryable.test(output) || stderrRetryable.test(stderr));
+export function shouldStopOnApiError(stderr: string): boolean {
+  return stderrFatal.test(stderr) && !stderrRetryable.test(stderr);
 }
 
 export function startWatchers(
@@ -32,9 +29,7 @@ export function startWatchers(
 
   const errorTimer = setInterval(() => {
     if (!isAlive(pid)) return;
-    const output = safeRead(join(context.runDir, 'output.jsonl'));
-    const stderr = safeRead(join(context.runDir, 'agent-stderr.log'));
-    if (shouldStopOnApiError(output, stderr)) void stop();
+    if (shouldStopOnApiError(safeRead(join(context.runDir, 'agent-stderr.log')))) void stop();
   }, 2_000);
   errorTimer.unref();
   intervals.push(errorTimer);

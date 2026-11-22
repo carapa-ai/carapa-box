@@ -56,7 +56,6 @@ export const cursorAcpContract: AcpHarnessContract = {
   id: 'cursor-acp',
   restore: 'load',
   restoreFailure: 'new-session',
-  reportModel: true,
   prepare(context: RunContext) {
     // One config per conversation: runs in a conversation are serialized.
     useCursorRelay(context.env, join(dirname(dirname(context.runDir)), 'cursor-config',

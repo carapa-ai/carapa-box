@@ -82,10 +82,10 @@ export function discardMarker(runDir: string, key: string): string {
   return join(dirname(dirname(runDir)), 'discarded-sessions', safeSessionKey(key));
 }
 
-/** Session IDs a discard marker rejects; undefined for a legacy marker that recorded none (rejects every ID). */
-export function discardedSessionIds(marker: string): string[] | undefined {
+/** Session IDs a discard marker rejects; empty when the marker is missing, unreadable or records none. */
+export function discardedSessionIds(marker: string): string[] {
   try {
     const ids = JSON.parse(readFileSync(marker, 'utf8')).sessionIds;
-    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string' && id !== '') : undefined;
-  } catch { return undefined; }
+    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string' && id !== '') : [];
+  } catch { return []; }
 }

@@ -10,7 +10,7 @@ import { relayCodeHash } from "../../egress-proxy/api-relay/api-relay.mjs";
 export const EGRESS_HASH_LABEL = "carapa.egress.code-hash";
 
 /** Bind-mounted code files per egress service (see egress-proxy/docker-compose*.yml). */
-export const EGRESS_SERVICE_FILES: Record<string, string[]> = {
+const EGRESS_SERVICE_FILES: Record<string, string[]> = {
     "llama-proxy": ["llama-proxy.mjs"],
 };
 
@@ -215,9 +215,9 @@ export function parseEgressStatus(body: string): EgressStatus | null {
     }
 }
 
-export const EGRESS_IDLE_POLL_MS = 5_000;
-export const EGRESS_IDLE_LOG_MS = 60_000;
-export const EGRESS_IDLE_WAIT_DEFAULT_MS = 1_800_000;
+const EGRESS_IDLE_POLL_MS = 5_000;
+const EGRESS_IDLE_LOG_MS = 60_000;
+const EGRESS_IDLE_WAIT_DEFAULT_MS = 1_800_000;
 
 export function egressIdleWaitMs(env: Record<string, string | undefined> = process.env): number {
     const value = Number(env.EGRESS_IDLE_WAIT_MS?.trim());
@@ -247,8 +247,8 @@ async function waitForIdle(service: string, deps: EgressRefreshDeps): Promise<vo
     }
 }
 
-export const RELAY_RELOAD_POLL_MS = 1_000;
-export const RELAY_RELOAD_WAIT_MS = 60_000;
+const RELAY_RELOAD_POLL_MS = 1_000;
+const RELAY_RELOAD_WAIT_MS = 60_000;
 
 /** Reload api-relay in place when the code it serves differs from the code on disk; true once it serves the new code. */
 async function reloadRelay(deps: EgressRefreshDeps): Promise<boolean> {

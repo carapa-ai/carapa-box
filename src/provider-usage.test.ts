@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { type KeyCheckResult, checkProviderKey, fetchAccountUsage, fetchMistralBudget, inspectProviderKey, parseMuseUsage } from './provider-usage.js';
+import { type KeyCheckResult, fetchAccountUsage, fetchMistralBudget, inspectProviderKey, parseMuseUsage } from './provider-usage.js';
 
 const respond = (body: unknown, status = 200) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
 
@@ -118,7 +118,7 @@ test('GitLab and GitHub tokens report the expiry date their host sends; failures
   ];
   for (const [provider, options, request, expected] of cases) {
     expect(await inspectProviderKey(provider, 'test-key-1234', request, undefined, options)).toEqual(expected);
-    expect(await checkProviderKey(provider, 'test-key-1234', request, undefined, options)).toBe(expected.result);
+    expect((await inspectProviderKey(provider, 'test-key-1234', request, undefined, options)).result).toBe(expected.result);
   }
 });
 

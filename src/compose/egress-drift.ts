@@ -8,7 +8,7 @@ import { logger } from "../logger.js";
 const EGRESS_DRIFT_SERVICES = ["api-relay", "llama-proxy", "squid"];
 
 /** What the deploy copy of one service lacks compared with the checkout. */
-export interface ServiceDrift {
+interface ServiceDrift {
     /** The whole service is absent from the deploy copy. */
     missing_service: boolean;
     /** Volume targets (container paths) present in the checkout only. */

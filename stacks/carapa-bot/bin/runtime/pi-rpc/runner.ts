@@ -16,7 +16,6 @@ import { readJournal, decodeObject } from '../protocol/journal';
 import { sendPi as send, decodePiResponse } from '../protocol/pi';
 import type { RunContext } from '../contracts';
 import { acquireSessionLock, releaseSessionLock } from '../sessions';
-import { adoptLegacyPiSession } from './history';
 import { rekeyMcpCache } from './mcp-cache';
 import { ensureProjectMcpApprovals } from './mcp-approvals';
 import { atomicWrite, writeRunFile } from '../files';
@@ -48,10 +47,6 @@ function trim(path: string): string {
 function readPid(path: string): number | null {
   const value = Number(trim(path));
   return Number.isSafeInteger(value) && value > 0 ? value : null;
-}
-
-function appendJson(path: string, value: unknown): void {
-  appendFileSync(path, `${JSON.stringify(value)}\n`);
 }
 
 function readMessages(path: string, cursor: Cursor, rawCapturePath?: string): Json[] {
@@ -244,7 +239,6 @@ export async function runPiRpcHarness(context: RunContext): Promise<number> {
     let daemonOutput = join(sessionDir, 'pi-rpc.out');
     let offset = statSync(daemonOutput, { throwIfNoEntry: false })?.size ?? 0;
     if (newDaemon) {
-      adoptLegacyPiSession(context, rememberedSession);
       clearRuntime(sessionDir, false);
       const launched = await startDaemon(
         context,
@@ -275,15 +269,12 @@ export async function runPiRpcHarness(context: RunContext): Promise<number> {
     // Pi saves a new session only once it holds a message. Announcing it earlier
     // lets Board resume an ID Pi cannot load when the turn failed before that.
     const sessionFile = typeof state.data?.sessionFile === 'string' ? state.data.sessionFile : '';
-    const outputPath = join(context.runDir, 'output.jsonl');
-    writeFileSync(outputPath, '');
     let announced = false;
     const announceSession = () => {
       if (announced || (sessionFile && !existsSync(sessionFile))) return;
       announced = true;
       writeFileSync(join(sessionDir, 'session_id'), sessionId);
       v1.session(sessionId, Boolean(rememberedSession));
-      appendJson(outputPath, { type: 'thread.started', thread_id: sessionId });
     };
     announceSession();
     v1.start();
@@ -363,7 +354,6 @@ export async function runPiRpcHarness(context: RunContext): Promise<number> {
             continue;
           }
           if (message.type === 'response' || message.type === 'available_commands_update') continue;
-          appendJson(outputPath, message);
           if (!firstOutput && ['message_update', 'tool_execution_start', 'agent_end'].includes(String(message.type))) {
             firstOutput = true;
             writeRunFile(context.runDir, 'first_output_at_ms', String(Date.now()));
@@ -433,13 +423,12 @@ export async function runPiRpcHarness(context: RunContext): Promise<number> {
     if (!completed) throw new Error('Pi RPC turn timed out');
     if (failed && !interrupted) {
       v1.finish('failed', 'provider_error', failed);
-      appendJson(outputPath, { type: 'turn.failed', error: { message: failed } });
       return 1;
     }
     if (interrupted || v1.runStatus === 'interrupted') {
       v1.finish('interrupted', v1.stopReason || 'interrupted');
     } else if (v1.runStatus === 'failed') {
-      v1.finish('failed', v1.stopReason, 'Pi assistant stopped with an error');
+      v1.finish('failed', v1.stopReason, v1.errorMessage || 'Pi assistant stopped with an error');
     } else {
       v1.finish('completed', v1.stopReason || 'end_turn');
     }
@@ -462,7 +451,6 @@ export async function runPiRpcHarness(context: RunContext): Promise<number> {
       interrupted ? 'interrupted' : 'runtime_error',
       interrupted ? undefined : message,
     );
-    appendJson(join(context.runDir, 'output.jsonl'), { type: 'turn.failed', error: { message } });
     appendFileSync(join(context.runDir, 'agent-stderr.log'), `managed Pi RPC: ${message}\n`);
     return 1;
   } finally {

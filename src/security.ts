@@ -277,18 +277,20 @@ export async function validateCommand(
     command: string,
     tool = "sandbox_exec",
     options: { shellFree?: boolean } = {}
-): Promise<{ allowed: boolean; reason?: string; policy_name?: string }> {
+): Promise<{ allowed: boolean; reason?: string; policy_name: string }> {
     if (command.length > MAX_COMMAND_LENGTH) {
         return {
             allowed: false,
-            reason: `Command exceeds maximum length (${command.length} > ${MAX_COMMAND_LENGTH} bytes).`
+            reason: `Command exceeds maximum length (${command.length} > ${MAX_COMMAND_LENGTH} bytes).`,
+            policy_name: "command_length"
         };
     }
 
     if (!(await hasOpaPolicy(stackPath))) {
         return {
             allowed: false,
-            reason: "No policy.wasm found. Compile a .rego policy with: bash scripts/compile-policies.sh"
+            reason: "No policy.wasm found. Compile a .rego policy with: bash scripts/compile-policies.sh",
+            policy_name: "missing_policy"
         };
     }
 

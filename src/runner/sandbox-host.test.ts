@@ -91,8 +91,8 @@ describe("ProjectHost timeout and kill", () => {
 
 describe("sandbox host standalone", () => {
     test("--serve from this file alone replies after the drain although a descendant holds the pipes", async () => {
-        // OpenShell mounts only src/os-runner for the host: ../utils.js (and its config/logger graph) is absent there.
-        const isolated = join(dir, "isolated", "os-runner");
+        // OpenShell mounts only src/runner for the host: ../utils.js (and its config/logger graph) is absent there.
+        const isolated = join(dir, "isolated", "runner");
         const pidFile = join(dir, "isolated.pid");
         mkdirSync(isolated, { recursive: true });
         copyFileSync(join(import.meta.dir, "sandbox-host.ts"), join(isolated, "sandbox-host.ts"));

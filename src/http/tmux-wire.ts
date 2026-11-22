@@ -1,6 +1,6 @@
 /**
  * Wire contract of Board's tmux REST routes, shared by the Linux box
- * (src/http/tmux.ts) and the native runner (src/os-runner/tmux.ts).
+ * (src/http/tmux.ts) and the native runner (src/runner/tmux.ts).
  */
 import * as z from "zod";
 

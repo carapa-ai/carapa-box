@@ -35,14 +35,31 @@ RUN npm install --global --prefix /opt/npm "npm@${NPM_VERSION}" \
 # The hardened base ships gcc-14 runtime libs as "+dhi5", which apt orders above the
 # mirror's "+deb13u0+dhi6" build, so build-essential's gcc-14 dependency looks like an
 # impossible downgrade. Move those packages to the mirror's gcc-14 version together.
+# The upgrade can replace a DHI-modified conffile (e.g. base-files' /etc/debian_version);
+# keep the installed version instead of stopping at dpkg's prompt. Build-only ARG,
+# so the published image does not inherit DEBIAN_FRONTEND.
+ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
   && GCC_V="$(apt-cache policy gcc-14 | awk '/Candidate:/{print $2}')" \
   && apt-get install -y --no-install-recommends --allow-downgrades \
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
   gcc-14-base="$GCC_V" libatomic1="$GCC_V" libgcc-s1="$GCC_V" libstdc++6="$GCC_V" \
   bash git jq curl wget python3 python3-pip python3-venv ripgrep ca-certificates procps coreutils debianutils passwd dropbear-bin openssh-client openssh-sftp-server util-linux \
   mc htop socat gzip unzip tmux bubblewrap chromium libnss3-tools build-essential pulseaudio pulseaudio-utils xvfb \
   && update-alternatives --install /usr/bin/which which /usr/bin/which.debianutils 0 \
   && rm -rf /var/lib/apt/lists/*
+
+# The hardened base records its packages one file each in /var/lib/dpkg/status.d
+# for scanners; apt only updates /var/lib/dpkg/status, so those files go stale
+# and scanners report versions that are no longer installed. Drop every entry
+# dpkg itself tracks; an entry dpkg does not know is kept.
+RUN for f in /var/lib/dpkg/status.d/*; do \
+      [ -f "$f" ] || continue; \
+      p="$(sed -n 's/^Package: //p' "$f" | head -n 1)"; \
+      a="$(sed -n 's/^Architecture: //p' "$f" | head -n 1)"; \
+      if dpkg-query -W "$p:$a" >/dev/null 2>&1 || dpkg-query -W "$p" >/dev/null 2>&1; then rm -f "$f"; fi; \
+    done
 
 # npm 12.0.2 still bundles vulnerable releases of these dependencies. Update
 # them within their supported major versions until npm ships patched bundles.

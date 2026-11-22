@@ -9,7 +9,6 @@ const primeThinking = (context: RunContext): string =>
 export const primeAgentAcpContract: AcpHarnessContract = {
   id: 'prime-agent-acp',
   restore: 'process-argument',
-  reportModel: true,
   prepare: preparePrimeRelay,
   // Model and thinking are launch flags only; a warm process keeps the old ones.
   launchIdentity: (context) => JSON.stringify([context.args.model, primeThinking(context)]),

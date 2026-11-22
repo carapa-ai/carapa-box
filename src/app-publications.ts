@@ -8,7 +8,7 @@ import {
     ingressSettings,
     isValidIngressIdentifier,
     listIngressEndpoints,
-    requireIngressMigration,
+    requireIngressSandbox,
     reserveIngressPort,
     waitIngressRoute,
 } from './ingress.js';
@@ -39,7 +39,7 @@ export interface PublicationRequest {
     ownHostnames?: string[];
 }
 const validId = (id: string) => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(id);
-export function publicationFile(
+function publicationFile(
     directory: string,
     project: string,
     id: string,
@@ -110,7 +110,7 @@ export async function controlAppPublication(
         directory: ingressDirectory(),
         enabled: ingressEnabled,
         proxyEnabled: nginxProxyEnabled,
-        migrate: requireIngressMigration,
+        requireSandbox: requireIngressSandbox,
         reserve: reserveIngressPort,
         wait: waitIngressRoute,
         endpoints: listIngressEndpoints,
@@ -203,7 +203,7 @@ export async function controlAppPublication(
             throw new Error(
                 'App port must be 1024–65535, excluding the managed SSH port',
             );
-        await deps.migrate(project);
+        await deps.requireSandbox(project);
         const model = JSON.parse(
             await fs.readFile(
                 path.join(deps.directory, 'compose', `${project}.json`),

@@ -292,6 +292,15 @@ describe("execCompose", () => {
             expect(state.spawnCalls[0].opts.env.STACK_DIR).toBe("/host/stacks/mybot");
         });
 
+        it("resolves a relative SANDBOX_STACKS_HOST_DIR against SANDBOX_HOST_DIR", async () => {
+            // docker-compose.yml's default when SANDBOX_STACKS_DIR is empty.
+            process.env.SANDBOX_HOST_DIR = "/host/project";
+            process.env.SANDBOX_STACKS_HOST_DIR = "./stacks";
+            queueSpawn({});
+            await execCompose("/app/stacks/mybot", ["ps"]);
+            expect(state.spawnCalls[0].opts.env.STACK_DIR).toBe("/host/project/stacks/mybot");
+        });
+
         it("rewrites app root path using SANDBOX_HOST_DIR when not under stacks dir", async () => {
             process.env.SANDBOX_HOST_DIR = "/host/project";
             delete process.env.SANDBOX_STACKS_HOST_DIR;

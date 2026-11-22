@@ -99,7 +99,7 @@ export async function controlRun(runDirInput: string, action: LifecycleAction): 
         if (typeof args.conversationKey === 'string' && args.conversationKey) {
           const marker = discardMarker(runDir, args.conversationKey);
           mkdirSync(dirname(marker), { recursive: true });
-          const sessionIds = new Set(existsSync(marker) ? discardedSessionIds(marker) : []);
+          const sessionIds = new Set(discardedSessionIds(marker));
           // Codex writes thread_id when the thread starts; session_id only lands when the first turn ends.
           for (const id of [args.sessionId, session && readText(join(session, 'session_id')), session && readText(join(session, 'thread_id'))]) {
             if (typeof id === 'string' && id) sessionIds.add(id);

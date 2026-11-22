@@ -27,12 +27,11 @@ import { ControlRequestPoller } from './controls';
 import {
   isCapacityFailure,
   isMeaningfulTurnMessage,
-  translateMessage,
+  isOutputMessage,
 } from './translator';
 import type { CodexRunnerArgs, JsonRecord, RpcId, RpcMessage } from './types';
-import { array, errorMessage, record, string } from './types';
+import { errorMessage, record, string } from './types';
 import { CodexRunV1Adapter } from './v1';
-import { createPlanRenderer } from './plans';
 import { ToolCallRecovery } from './tool-call-recovery';
 import { ToolCallCorrection, TOOL_CALL_CORRECTION_NOTICE } from '../tool-call-recovery';
 
@@ -139,7 +138,6 @@ async function run(runDirInput: string): Promise<number> {
     atomicWrite(generationFile, currentGeneration);
   }
   const lock = persistent ? await acquireSessionLock(sessionDir, runDir) : '';
-  const outputPath = join(runDir, 'output.jsonl');
   const rawCodexPath = join(runDir, 'codex.raw.jsonl');
   const controlPath = join(runDir, 'codex-control.json');
   const stderrPath = join(sessionDir, 'codex-stderr.log');
@@ -149,9 +147,7 @@ async function run(runDirInput: string): Promise<number> {
   const responsesDir = join(runDir, 'control-responses');
   mkdirSync(requestsDir, { recursive: true });
   mkdirSync(responsesDir, { recursive: true });
-  writeFileSync(outputPath, '');
   writeFileSync(rawCodexPath, '');
-  const renderPlan = createPlanRenderer(args);
   const v1 = new CodexRunV1Adapter(
     new RunV1Writer(runDir, {
       format: 'carapa-run',
@@ -160,7 +156,6 @@ async function run(runDirInput: string): Promise<number> {
       requestedModel: args.model.trim() || null,
     }),
     args,
-    renderPlan,
   );
 
   const nativePlanFeature = enabled(process.env.ENABLE_CODEX_PLAN_MODE);
@@ -276,9 +271,6 @@ async function run(runDirInput: string): Promise<number> {
     firstOutputRecorded = true;
     writeFileSync(join(runDir, 'first_output_at_ms'), String(Date.now()));
   };
-  const append = (value: JsonRecord): void => {
-    appendFileSync(outputPath, `${JSON.stringify(value)}\n`);
-  };
   const publishControl = (): void => {
     const temporary = `${controlPath}.tmp.${process.pid}`;
     writeFileSync(
@@ -346,17 +338,6 @@ async function run(runDirInput: string): Promise<number> {
       v1.consume(message);
       const requestId = String(message.id);
       pendingUserInput.set(requestId, message.id);
-      append({
-        type: 'item.completed',
-        item: {
-          id: `request-user-input-${requestId}`,
-          type: 'agent_message',
-          text: `\n\n\`\`\`askuserquestion\n${JSON.stringify({
-            questions: array(record(message.params).questions),
-            codexRequestId: requestId,
-          })}\n\`\`\`\n\n`,
-        },
-      });
       recordFirstOutput();
       return;
     }
@@ -377,11 +358,7 @@ async function run(runDirInput: string): Promise<number> {
     );
     recovery.consume(message);
     if (!suppressCapacityFailure) v1.consume(message);
-    const event = translateMessage(args, message, renderPlan);
-    if (event && !suppressCapacityFailure) {
-      append(event);
-      if (String(event.type).startsWith('item.')) recordFirstOutput();
-    }
+    if (!suppressCapacityFailure && isOutputMessage(message)) recordFirstOutput();
     if (message.method === 'turn/completed') {
       state.exitStatus = string(record(params.turn).status, 'completed');
       state.completed = true;
@@ -452,7 +429,6 @@ async function run(runDirInput: string): Promise<number> {
     daemonReusable = true;
     v1.session(state.threadId, resumedThread);
     v1.start();
-    append({ type: 'thread.started', thread_id: state.threadId });
     publishControl();
 
     const runTurn = async (model: string, effort: string, input = prompt): Promise<void> => {
@@ -463,7 +439,6 @@ async function run(runDirInput: string): Promise<number> {
       state.capacityFailure = false;
       state.meaningfulTurnOutput = false;
       recovery = new ToolCallRecovery();
-      if (model) append({ type: 'assistant', message: { content: [], model } });
       const turnParams: CodexMethods['turn/start']['params'] = {
         threadId: state.threadId,
         input: [{ type: 'text', text: input }],
@@ -531,16 +506,11 @@ async function run(runDirInput: string): Promise<number> {
         text: TOOL_CALL_CORRECTION_NOTICE,
       } } };
       v1.consume(notice);
-      append(translateMessage(args, notice, renderPlan)!);
       await runTurn(model, effort, correctionPrompt);
     }
   } catch (error) {
     daemonReusable = false;
     v1.runtimeError(error);
-    append({
-      type: 'item.completed',
-      item: { type: 'error', message: errorMessage(error) },
-    });
     stderr.write(`${error instanceof Error ? error.stack : error}\n`);
     state.exitStatus = 'failed';
   } finally {

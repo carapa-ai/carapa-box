@@ -15,7 +15,7 @@ function fixture() {
         ingress: {
             enabled: () => false,
             settings: () => { throw new Error('Unexpected ingress settings'); },
-            requireMigration: async () => { throw new Error('Unexpected ingress migration'); },
+            requireSandbox: async () => { throw new Error('Unexpected ingress sandbox check'); },
             setSsh: async () => { throw new Error('Unexpected ingress mutation'); },
             readSsh: async () => { throw new Error('Unexpected ingress read'); },
             waitRoute: async () => { throw new Error('Unexpected ingress wait'); },
@@ -53,7 +53,7 @@ describe("sandbox SSH control boundary", () => {
         deps.ingress = {
             enabled: () => true,
             settings: () => ({ host: 'box.lan' } as any),
-            requireMigration: async () => {},
+            requireSandbox: async () => {},
             setSsh: async () => { if (unavailable) throw new Error('ingress unavailable'); return 22042; },
             readSsh: async () => ({ port: 22042, enabled: true }),
             waitRoute: async () => { if (unavailable) throw new Error('ingress unavailable'); },
@@ -79,7 +79,7 @@ describe("sandbox SSH control boundary", () => {
         deps.ingress = {
             enabled: () => true,
             settings: () => ({ host: 'box.lan' } as any),
-            requireMigration: async () => {},
+            requireSandbox: async () => {},
             setSsh: async () => 22042,
             readSsh: async () => ({ port: 22042, enabled: true }),
             waitRoute: async () => { waits++; },
@@ -101,7 +101,7 @@ describe("sandbox SSH control boundary", () => {
                 enabled: () => true,
                 // Only `host` is read; the full ingress settings object is not needed here.
                 settings: () => ({ host: 'box.lan' } as any),
-                requireMigration: async () => {},
+                requireSandbox: async () => {},
                 setSsh: async () => { touched.push('setSsh'); return 22042; },
                 readSsh: async () => intent,
                 waitRoute: async () => { touched.push('waitRoute'); },
@@ -116,22 +116,22 @@ describe("sandbox SSH control boundary", () => {
         }
     });
 
-    test('unmigrated sandboxes reject start before daemon changes and status reports migration without waiting', async () => {
+    test('sandboxes not started with ingress reject start before daemon changes and status reports the error without waiting', async () => {
         const { deps, calls } = fixture();
         deps.ingress = {
             enabled: () => true,
             settings: () => ({ host: 'box.lan' } as any),
-            requireMigration: async () => { throw new Error('Restart the sandbox through CarapaBoard to migrate ingress'); },
+            requireSandbox: async () => { throw new Error('Start the sandbox through CarapaBoard with ingress'); },
             setSsh: async () => 22042,
             readSsh: async () => ({ port: 22042, enabled: true }),
             waitRoute: async () => { throw new Error('unexpected route wait'); },
             checkRoute: async () => { throw new Error('unexpected route check'); },
         };
-        await expect(controlSandboxSsh('/stacks/carapa-bot', 'carapa-bot-demo', 'start', deps)).rejects.toThrow('Restart the sandbox');
+        await expect(controlSandboxSsh('/stacks/carapa-bot', 'carapa-bot-demo', 'start', deps)).rejects.toThrow('Start the sandbox');
         expect(calls.some(call => call[0] === 'exec')).toBe(false);
         const status = await controlSandboxSsh('/stacks/carapa-bot', 'carapa-bot-demo', 'status', deps);
         expect(status).toMatchObject({ running: true, ingress: true, port: 22042 });
-        expect(status.error).toContain('Restart the sandbox');
+        expect(status.error).toContain('Start the sandbox');
         expect(status.command).toBeUndefined();
         expect(await controlSandboxSsh('/stacks/carapa-bot', 'carapa-bot-demo', 'stop', deps)).toMatchObject({ running: false });
         expect(calls.at(-1)?.at(-1)).toBe('stop');

@@ -18,7 +18,7 @@ afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursiv
 const BIN = path.resolve(import.meta.dir, "..", "..", "stacks", "carapa-bot", "bin");
 
 function config(): RunnerConfig {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "os-runner-"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "carapa-runner-"));
     roots.push(root);
     return {
         root, stateDir: path.join(root, "state"), hubUrl: "wss://hub", boxId: "mac", credential: "x", relayUpstream: "https://hub:8443", relayUpstreamInsecure: false,

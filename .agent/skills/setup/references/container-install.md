@@ -61,7 +61,9 @@ An empty optional provider file satisfies Compose but does not authenticate it.
 Create missing bind sources as the correct type before Docker can create them
 as root-owned directories:
 
-- `generated/`, `generated/audit/`, and `generated/nginx-routes/` are directories.
+- `generated/` and its `audit/`, `nginx-routes/`, `ingress/`, `ipc/` and `groups/`
+  subdirectories are directories owned by the operator (the controller writes
+  sandbox IPC and group files there as that user).
 - `generated/squid-generated.conf` is a file; initialize an absent file empty.
   Squid uses its repository template until a generated policy is available.
 - `egress-proxy/tool_profiles.jsonc` is a file; copy
@@ -85,9 +87,13 @@ sudo bash security/install-apparmor.sh
 ```
 
 If AppArmor is unavailable, report the unsupported prerequisite; do not replace
-it with `unconfined`. gVisor is optional for agent stacks: use
-`scripts/install-gvisor.sh` only when requested and review its Docker restart
-implications first. Installing a runtime does not select it for any stack.
+it with `unconfined`. The controller and egress services do not need gVisor,
+but the bundled `carapa-bot` stack sets `runtime: runsc`. Without it, starts
+fail with `unknown or invalid runtime name: runsc`. Before an agent stack is
+used, check `docker info --format '{{json .Runtimes}}'` and install it with
+`sudo bash scripts/install-gvisor.sh`, which reloads, rather than restarts, the
+Docker daemon. Tell the operator first. Do not remove `runtime: runsc` to get a
+stack running. Installing a runtime does not select it for any other stack.
 
 Build with the existing scripts, supplying the selected directories explicitly:
 
@@ -114,3 +120,22 @@ docker compose up -d
 Use `docker compose ps` and bounded recent logs in each directory, then run
 the repository-root controller check command from `SKILL.md`. A Docker healthcheck that only checks PID 1
 is not a substitute for the authenticated HTTP check.
+
+## Uninstall
+
+Removal is a separate, explicit request; never use it to "reset" a failed
+setup. Show the operator the dry-run plan first, then apply only the scopes
+they chose:
+
+```bash
+bash .agent/skills/setup/scripts/uninstall.sh [--images] [--state] [--secrets]
+bash .agent/skills/setup/scripts/uninstall.sh [--images] [--state] [--secrets] --yes
+sudo bash .agent/skills/setup/scripts/uninstall.sh --host --yes   # AppArmor + gVisor
+```
+
+The default scope removes only Docker containers, networks and Compose volumes
+of this checkout's controller and egress projects and of controller-launched
+stacks. `--secrets` deletes only the secret files the Compose files declare,
+which revokes tokens other clients (CarapaBoard, relay clients) hold. Group
+directories, agent homes and CarapaBoard data are never removed. `--host`
+reloads the Docker daemon when it unregisters gVisor.

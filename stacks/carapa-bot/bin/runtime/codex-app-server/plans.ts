@@ -6,7 +6,7 @@ import { string } from './types';
 
 export type PlanRenderer = (id: string, text: string) => string;
 
-/** Both output formats share one saved artifact for each completed plan item. */
+/** One saved artifact per completed plan item, however often it is rendered. */
 export function createPlanRenderer(args: CodexRunnerArgs): PlanRenderer {
   const rendered = new Map<string, string>();
   return (id, text) => {

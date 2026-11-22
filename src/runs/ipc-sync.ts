@@ -24,16 +24,16 @@ import { assertParentSafe, openContained, readdirContained } from "./safe-open.j
 
 export const REPLICA_MARKER = ".carapa-board-replica";
 export const SMALL_FILE_BYTES = 64 * 1024;
-export const DEFAULT_SYNC_BUDGET = 8 * 1024 * 1024;
-export const MAX_SYNC_BUDGET = 32 * 1024 * 1024;
+const DEFAULT_SYNC_BUDGET = 8 * 1024 * 1024;
+const MAX_SYNC_BUDGET = 32 * 1024 * 1024;
 const MAX_FILES = 20000;
 const MAX_DEPTH = 8;
 
 /** Written last by the runtime; never replicate them ahead of their data. */
-export const MARKER_NAMES = new Set(["exit_code", "metrics_complete", "metrics.json"]);
+const MARKER_NAMES = new Set(["exit_code", "metrics_complete", "metrics.json"]);
 
 /** Runtime-private directories Board never reads. */
-export const EXCLUDED_DIRS = new Set([
+const EXCLUDED_DIRS = new Set([
     "launch.lock", "lifecycle.lock", "claude-session", "pi-rpc", "hermes-home", "native-history", "node_modules", ".git",
 ]);
 
@@ -42,13 +42,13 @@ export const EXCLUDED_DIRS = new Set([
  * file is re-sent whole when it changes (a rewritten artifact must never be
  * reassembled from an old prefix).
  */
-export function isAppendOnly(rel: string): boolean {
+function isAppendOnly(rel: string): boolean {
     return /\.(jsonl|log|out)$/.test(path.basename(rel));
 }
 
 export type BaseEntry = [size: number, mtimeMs: number | null];
 
-export interface SyncPushOp {
+interface SyncPushOp {
     op: "write" | "remove" | "mkdir";
     path: string;
     data?: string;
@@ -67,7 +67,7 @@ export interface SyncRequest {
     exclude?: string[];
 }
 
-export interface SyncFile {
+interface SyncFile {
     path: string;
     size: number;
     mtimeMs: number;

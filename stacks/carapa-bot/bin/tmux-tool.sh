@@ -1,10 +1,10 @@
 #!/bin/sh
 # tmux-tool.sh — Low-level tmux helper invoked by the CarapaBox REST /api/tmux adapter.
 #
-# Mounted read-only at /usr/local/stack-cli-bin from the shared CarapaBot tools,
-# and authorized by policy.rego's normalized trusted-bin rule. CarapaBox prefers direct tmux
-# commands via `docker compose exec`, but this wrapper is kept for any stack-side
-# script that needs a guaranteed-safe tmux invocation.
+# The CarapaBot image copies bin/ to /usr/local/ai-cli-bin, and src/http/tmux.ts
+# runs /usr/local/ai-cli-bin/tmux-tool.sh for every REST tmux operation (authorized
+# by policy.rego's normalized trusted-bin rule). /usr/local/stack-cli-bin is only the
+# optional dev override mount (docker-compose.dev.yml).
 #
 # Usage:
 #   tmux-tool.sh create  <session> [cols] [rows]

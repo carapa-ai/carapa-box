@@ -112,67 +112,6 @@ function aliasesPath(projectName: string): string | undefined {
     return destination ? destination.replace(/\.carapa\.conf$/, ".aliases.json") : undefined;
 }
 
-/**
- * Route and aliases files this project used before route labels got a hash
- * suffix. Undefined when the legacy name equals the current one.
- */
-function legacyRouteFiles(projectName: string): { route: string; aliases: string } | undefined {
-    const dir = routesDir();
-    const label = safeProjectLabel(projectName);
-    const current = routePath(projectName);
-    if (!dir || !label || !current) return undefined;
-    const route = path.join(dir, `${label}${ROUTE_SUFFIX}`);
-    if (route === current) return undefined;
-    return { route, aliases: route.replace(/\.carapa\.conf$/, ".aliases.json") };
-}
-
-/**
- * This project's pre-hash files, or undefined when there are none or the
- * legacy route belongs to someone else. It is the project's own only when its
- * default (first) server_name is one of the project's hostnames, either the
- * computed ones or those of its current route file: `my-stack-dev.carapa.conf`
- * may also be the current file of a different project named `my-stack-dev`.
- */
-async function ownedLegacyRouteFiles(
-    projectName: string,
-    destination: string,
-    computedHostnames: string[],
-): Promise<{ route: string; aliases: string } | undefined> {
-    const legacy = legacyRouteFiles(projectName);
-    if (!legacy) return undefined;
-    const firstHostname = (content: string) =>
-        content.match(/server_name\s+([^;]+);/)?.[1].trim().split(/\s+/)[0]?.toLowerCase();
-    const [legacyContent, currentContent] = await Promise.all([
-        fsp.readFile(legacy.route, "utf8").catch(() => ""),
-        fsp.readFile(destination, "utf8").catch(() => ""),
-    ]);
-    const first = firstHostname(legacyContent);
-    const own = [...computedHostnames.map((hostname) => hostname.toLowerCase()), firstHostname(currentContent)];
-    return first && own.includes(first) ? legacy : undefined;
-}
-
-/** Remove the legacy files; returns their content so a failed reload can restore them. Best effort. */
-async function removeLegacyRouteFiles(
-    projectName: string,
-    legacy: { route: string; aliases: string },
-): Promise<Array<{ path: string; content: string }>> {
-    const removed: Array<{ path: string; content: string }> = [];
-    for (const file of [legacy.route, legacy.aliases]) {
-        try {
-            const content = await fsp.readFile(file, "utf8").catch(() => undefined);
-            if (content === undefined) continue;
-            await fsp.rm(file, { force: true });
-            removed.push({ path: file, content });
-        } catch (error) {
-            logger.warn({ projectName, file: path.basename(file), err: error }, "Could not remove legacy nginx route file");
-        }
-    }
-    if (removed.length > 0) {
-        logger.info({ projectName, files: removed.map((file) => path.basename(file.path)) }, "Removed legacy nginx route files");
-    }
-    return removed;
-}
-
 async function readProjectAliases(projectAliasesFile: string | undefined): Promise<string[]> {
     if (!projectAliasesFile || !(await fileExists(projectAliasesFile))) return [];
     return validateAliases(
@@ -408,13 +347,12 @@ async function findForeignHostnameClaims(
     ownFile: string,
     projectName: string,
     domains: string[],
-    ignoredFiles: string[],
 ): Promise<{ primary: Map<string, string>; alias: Map<string, string> }> {
     const primary = new Map<string, string>();
     const alias = new Map<string, string>();
     try {
         const names = (await fsp.readdir(dir)).filter((name) =>
-            name.endsWith(ROUTE_SUFFIX) && !name.startsWith("app-") && name !== ownFile && !ignoredFiles.includes(name)).sort();
+            name.endsWith(ROUTE_SUFFIX) && !name.startsWith("app-") && name !== ownFile).sort();
         for (const name of names) {
             try {
                 const content = await fsp.readFile(path.join(dir, name), "utf8");
@@ -466,7 +404,12 @@ async function registerNginxProxyRouteUnlocked(
     const destination = routePath(projectName);
     if (!destination) return undefined;
 
-    const useIngress = ingressEnabled() && await fileExists(ingressComposePath(projectName));
+    const useIngress = ingressEnabled();
+    if (useIngress && !await fileExists(ingressComposePath(projectName))) {
+        // A published host port must never be exposed while ingress is enabled.
+        logger.warn({ projectName }, "No ingress compose model; skipping host proxy route");
+        return undefined;
+    }
     const upstreamHost = useIngress && process.env.NGINX_PROXY_INGRESS_HOST?.trim() || 'host.docker.internal';
     let ingressModel: IngressComposeModel | undefined;
     const endpointPort = async (service: string, targetPort: number): Promise<number | undefined> => {
@@ -531,14 +474,11 @@ async function registerNginxProxyRouteUnlocked(
         }
         resolvedExtraRoutes.push({ ...route, publishedPort });
     }
-    // Pre-hash route file of this same project: not a foreign claim, removed below.
-    const legacy = await ownedLegacyRouteFiles(projectName, destination, hostnames);
     const claims = await findForeignHostnameClaims(
         path.dirname(destination),
         path.basename(destination),
         projectName,
         domains,
-        legacy ? [path.basename(legacy.route)] : [],
     );
     const dropForeign = (names: string[]): string[] => names.filter((hostname) => {
         const key = hostname.toLowerCase();
@@ -569,10 +509,9 @@ async function registerNginxProxyRouteUnlocked(
         ],
         projectName,
     );
-    const removedLegacy = legacy ? await removeLegacyRouteFiles(projectName, legacy) : [];
     // Background reconciliation also handles already-running stacks. Avoid
     // nginx validation/reloads when their configuration has not changed.
-    if (previous === rendered && evicted.length === 0 && removedLegacy.length === 0) return url;
+    if (previous === rendered && evicted.length === 0) return url;
 
     try {
         await fsp.mkdir(path.dirname(destination), { recursive: true });
@@ -581,7 +520,7 @@ async function registerNginxProxyRouteUnlocked(
     } catch (error) {
         if (previous === undefined) await fsp.rm(destination, { force: true });
         else await fsp.writeFile(destination, previous, { mode: 0o644 });
-        for (const file of [...evicted, ...removedLegacy]) await fsp.writeFile(file.path, file.content, { mode: 0o644 });
+        for (const file of evicted) await fsp.writeFile(file.path, file.content, { mode: 0o644 });
         await reload().catch(() => undefined);
         throw error;
     }
@@ -604,33 +543,24 @@ async function registerNginxProxyRouteUnlocked(
 export function unregisterNginxProxyRoute(
     projectName: string,
     reload: () => Promise<void> = validateAndReloadNginx,
-    stackDir?: string,
 ): Promise<void> {
-    return serializeRoute(projectName, () => unregisterNginxProxyRouteUnlocked(projectName, reload, stackDir));
+    return serializeRoute(projectName, () => unregisterNginxProxyRouteUnlocked(projectName, reload));
 }
 
 async function unregisterNginxProxyRouteUnlocked(
     projectName: string,
     reload: () => Promise<void>,
-    stackDir: string | undefined,
 ): Promise<void> {
     const destination = routePath(projectName);
     if (!destination) return;
-    const computed = stackDir
-        ? defaultNginxProxyHostnames(stackDir, projectName, configuredNginxProxyDomains())
-        : [];
-    const legacy = await ownedLegacyRouteFiles(projectName, destination, computed);
-    const hasOwn = await fileExists(destination);
-    if (!hasOwn && !legacy) return;
+    if (!await fileExists(destination)) return;
 
-    const previous = hasOwn ? await fsp.readFile(destination, "utf8") : undefined;
-    if (hasOwn) await fsp.rm(destination);
-    const removedLegacy = legacy ? await removeLegacyRouteFiles(projectName, legacy) : [];
+    const previous = await fsp.readFile(destination, "utf8");
+    await fsp.rm(destination);
     try {
         await reload();
     } catch (error) {
-        if (previous !== undefined) await fsp.writeFile(destination, previous, { mode: 0o644 });
-        for (const file of removedLegacy) await fsp.writeFile(file.path, file.content, { mode: 0o644 });
+        await fsp.writeFile(destination, previous, { mode: 0o644 });
         await reload().catch(() => undefined);
         throw error;
     }

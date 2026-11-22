@@ -830,6 +830,7 @@ describe("validateCommand", () => {
         expect(r.allowed).toBe(false);
         expect(r.reason).toMatch(/exceeds maximum length/i);
         expect(r.reason).toContain(`${long.length}`);
+        expect(r.policy_name).toBe("command_length");
     });
 
     it("rejects a command of exactly 8193 bytes (MAX+1)", async () => {
@@ -862,11 +863,11 @@ describe("validateCommand", () => {
         }
     });
 
-    it("does not set policy_name when failing on missing policy.wasm", async () => {
+    it("names the missing_policy denial when policy.wasm is absent", async () => {
         const dir = makeTempDir();
         try {
             const r = await validateCommand(dir, "service", "ls");
-            expect(r.policy_name).toBeUndefined();
+            expect(r.policy_name).toBe("missing_policy");
         } finally {
             rmDir(dir);
         }

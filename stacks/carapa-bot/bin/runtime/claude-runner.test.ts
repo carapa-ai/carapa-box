@@ -87,10 +87,34 @@ test.each(['crash', 'hold'])('Claude %s fails the run, retires the process, and 
   const failed = f.turn('failed', prompt);
   expect(await runClaudeHarness(failed)).toBe(1);
   expect(events(failed.runDir).at(-1).status).toBe('failed');
-  expect(isAlive(Number(readFileSync(join(failed.runDir, 'pid'), 'utf8')))).toBe(false);
   const id = readFileSync(join(f.session, 'session_id'), 'utf8');
+  // The provider's own stderr explains a dead process; hold has none.
+  if (prompt === 'crash') expect(events(failed.runDir).at(-1).error.message).toContain(`No conversation found with session ID: ${id}`);
+  expect(isAlive(Number(readFileSync(join(failed.runDir, 'pid'), 'utf8')))).toBe(false);
   expect(await runClaudeHarness(f.turn('recovery'))).toBe(0);
   expect(f.launches()[1].args).toContain(`--resume=${id}`);
+});
+
+test('a failed run quotes only the stderr its own launch wrote, and none when the lock was never taken', async () => {
+  const f = fixture();
+  const stderrLog = join(f.session, 'claude.stderr.log');
+  mkdirSync(f.session, { recursive: true });
+  writeFileSync(stderrLog, 'No conversation found with session ID: earlier-launch\n');
+  const crashed = f.turn('crashed', 'crash');
+  expect(await runClaudeHarness(crashed)).toBe(1);
+  const message = events(crashed.runDir).at(-1).error.message;
+  expect(message).toContain('No conversation found with session ID:');
+  expect(message).not.toContain('earlier-launch');
+
+  const blocked = f.turn('blocked');
+  chmodSync(f.session, 0o500);
+  try {
+    expect(await runClaudeHarness(blocked)).toBe(1);
+  } finally {
+    chmodSync(f.session, 0o700);
+  }
+  expect(events(blocked.runDir).at(-1).error.message).not.toContain('No conversation found');
+  expect(readFileSync(join(blocked.runDir, 'agent-stderr.log'), 'utf8')).not.toContain('No conversation found');
 });
 
 test('provider error results fail the run without discarding a usable warm process', async () => {
@@ -98,7 +122,10 @@ test('provider error results fail the run without discarding a usable warm proce
   const failed = f.turn('failed', 'fail');
   expect(await runClaudeHarness(failed)).toBe(1);
   expect(events(failed.runDir).at(-1).status).toBe('failed');
-  expect(await runClaudeHarness(f.turn('next'))).toBe(0);
+  expect(events(failed.runDir).at(-1).error.message).toContain('No conversation found with session ID:');
+  const next = f.turn('next');
+  expect(await runClaudeHarness(next)).toBe(0);
+  expect(events(next.runDir).at(-1).error).toBeUndefined();
   expect(f.launches()).toHaveLength(1);
 });
 

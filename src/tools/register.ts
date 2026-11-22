@@ -2444,7 +2444,7 @@ export function registerTools(s: McpServer, updateRegistry = true) {
             const output = {
                 allowed: result.allowed,
                 reason: result.reason || "Allowed",
-                policy_name: result.policy_name || "legacy_json",
+                policy_name: result.policy_name,
                 engine: (await hasOpaPolicy(stackPath)) ? "opa" : "none",
             };
             return { content: [{ type: "text", text: JSON.stringify(output, null, 2) }] } as ToolResult;

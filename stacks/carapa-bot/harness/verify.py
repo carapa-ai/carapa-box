@@ -25,7 +25,7 @@ def verify(root=ROOT, abi_file=None):
         if modules:
             subprocess.run([str(directory / 'venv/bin/python'), '-c',
                 'import importlib,sys; [importlib.import_module(m) for m in sys.argv[1:]]', *modules], check=True, timeout=60)
-        if name in ('codex', 'claude', 'grok', 'muse', 'pi', 'omp', 'opencode', 'prime-agent', 'vibe', 'yarn', 'playwright'):
+        if name in ('codex', 'claude', 'grok', 'muse', 'pi', 'omp', 'opencode', 'prime-agent', 'vibe', 'playwright'):
             command = {'playwright': 'playwright-cli'}.get(name, name)
             executable = (Path('/usr/local/ai-cli-bin/playwright-cli') if name == 'playwright'
                           else root / 'bin' / command)

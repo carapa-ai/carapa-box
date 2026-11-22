@@ -8,8 +8,8 @@
 # Security: digest-pinned DHI base and Docker tooling,
 # seccomp/AppArmor/cap_drop/read_only applied via compose.
 
-# Matching Bun 1.4.2 build/runtime images, shared with CarapaBoard, pinned 2026-09-22.
-FROM dhi.io/bun:1.4.2-alpine3.23-dev@sha256:f622fcf7d9677b071b288b4e57386bc18a45c27798c3a0c2bf2cb8f1a0e3be4a AS bun-dev
+# Matching Bun 1.4.4 build/runtime images (musl 1.2.5-r24), pinned 2026-11-21.
+FROM dhi.io/bun:1.4.4-alpine3.23-dev@sha256:c89c4914ba11a290c617aaebf1e8246ae8ea2a538ba727ae3cf0e30ae4a4ccac AS bun-dev
 
 # ── OPA toolchain — shared base for both OPA compile stages below ────────
 # alpine:3.23 — pinned 2026-10-17
@@ -72,11 +72,13 @@ RUN mkdir -p /app/stacks /app/security /app/images /app/generated
 # ── Docker CLI binaries ─────────────────────────────────────────────────
 # DHI's Buildx carries dependency fixes absent from the standard release.
 FROM docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker-cli
-FROM dhi.io/docker:29.9.0-cli@sha256:4a85399782ced1f5cd0731e8cc48d5c97101ff1ed2634c1ef6b623df389f8f42 AS buildx
-FROM docker/compose-bin:edge@sha256:e6fa999c98cd50d8613c07651242267f5eda1955d85e7b63738956be17d21698 AS compose
+# dhi.io/docker:29.10.0-cli (buildx v0.39.0) — pinned 2026-11-21
+FROM dhi.io/docker:29.10.0-cli@sha256:400b373a3335048aa74b9e9dd52587d8328d729e470ae04f41719a81a9c679d4 AS buildx
+# docker/compose-bin:v5.8.0 release (was an untagged edge build) — pinned 2026-11-21
+FROM docker/compose-bin:v5.8.0@sha256:c9f99a4efa43ca83e5acc056da938c38504010c10a2dd804569032be5d3b0dd5 AS compose
 
 # ── Runtime stage — DHI hardened Bun ─────────────────────────────────────
-FROM dhi.io/bun:1.4.2-alpine3.23@sha256:eade039763b153d27382026f82563bdcc148970b6dda45993cbf34f096776b05
+FROM dhi.io/bun:1.4.4-alpine3.23@sha256:a869de0c70874053e763c6cfbab740fd85849bba12b5140a29f6795cd717ff15
 
 USER 0
 

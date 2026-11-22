@@ -135,8 +135,6 @@ test('provider errors streamed as text fail the turn despite a successful ACP re
   expect(isAlive(f.daemon(context.runDir))).toBe(false);
   const events = readFileSync(join(context.runDir, 'output.v1.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
   expect(events.at(-1)).toMatchObject({ type: 'run', status: 'failed' });
-  const compatibility = readFileSync(join(context.runDir, 'output.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-  expect(compatibility.at(-1)).toMatchObject({ type: 'turn.failed' });
   expect(readFileSync(join(context.runDir, 'exit_code'), 'utf8')).toBe('1');
   expect(existsSync(join(context.runDir, 'metrics_complete'))).toBe(true);
 }, 10_000);

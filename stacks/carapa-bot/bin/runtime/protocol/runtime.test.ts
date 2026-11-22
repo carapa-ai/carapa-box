@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { controlRun } from '../control';
 import { containerInstanceId, isAlive, terminateProcessTree } from '../processes';
 import { stopRun } from '../stop';
@@ -162,6 +162,18 @@ test('discard records a Codex thread_id written before the first turn finished',
   expect(loadAgentArgs(next).sessionId).toBe('');
 });
 
+test('a marker without recorded session IDs rejects no resume ID', () => {
+  const f = fixture();
+  const run = f.run('first');
+  const key = 'conversation-test';
+  const marker = discardMarker(run, key);
+  mkdirSync(dirname(marker), { recursive: true });
+  writeFileSync(marker, JSON.stringify({ discardedAt: new Date().toISOString() }));
+  const args = join(run, 'args.json');
+  writeFileSync(args, JSON.stringify({ ...JSON.parse(readFileSync(args, 'utf8')), conversationKey: key, sessionId: 'S-kept' }));
+  expect(loadAgentArgs(run).sessionId).toBe('S-kept');
+});
+
 test('lifecycle controls reject a foreign session and a stale container generation', async () => {
   const f = fixture();
   const run = f.run('first');
@@ -237,8 +249,8 @@ test('Claude warm turns reuse one process and recover history after shutdown', a
   await waitFor(() => existsSync(join(second, 'metrics_complete')), 'warm Claude completion');
   expect(readFileSync(join(second, 'exit_code'), 'utf8')).toBe('0');
   expect(pidFile(second, 'pid')).toBe(daemon);
-  expect(readFileSync(join(second, 'output.jsonl'), 'utf8')).toContain('turn 2: complete');
-  expect(readFileSync(join(second, 'output.jsonl'), 'utf8')).not.toContain('turn 1:');
+  expect(readFileSync(join(second, 'output.v1.jsonl'), 'utf8')).toContain('turn 2: complete');
+  expect(readFileSync(join(second, 'output.v1.jsonl'), 'utf8')).not.toContain('turn 1:');
   expect(readFileSync(join(second, 'output.v1.jsonl'), 'utf8')).toContain('"status":"resumed"');
   expect((await controlRun(second, 'stop-daemon')).ok).toBe(true);
   const third = f.run('third');

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { isIP } from "node:net";
 import { execDocker, execDockerWithTimeout, splitDockerOutput } from "./utils.js";
-import { ingressEnabled, ingressSettings, isValidIngressIdentifier, readIngressSsh, requireIngressMigration, setIngressSsh, waitIngressRoute, checkIngressRoute } from './ingress.js';
+import { ingressEnabled, ingressSettings, isValidIngressIdentifier, readIngressSsh, requireIngressSandbox, setIngressSsh, waitIngressRoute, checkIngressRoute } from './ingress.js';
 import type { ContainerStatus } from './compose/inventory.js';
 
 export interface SandboxSshStatus {
@@ -25,7 +25,7 @@ export interface SandboxSshStatus {
 const SSH_CONTROL_TIMEOUT_MS = 20000;
 const SSH_NOT_ENABLED_ERROR = "SSH is running inside the sandbox but was not enabled through CarapaBox; no route is published";
 const tails = new Map<string, Promise<void>>();
-const ingressControl = { enabled: ingressEnabled, settings: ingressSettings, requireMigration: requireIngressMigration, setSsh: setIngressSsh, readSsh: readIngressSsh, waitRoute: waitIngressRoute, checkRoute: checkIngressRoute };
+const ingressControl = { enabled: ingressEnabled, settings: ingressSettings, requireSandbox: requireIngressSandbox, setSsh: setIngressSsh, readSsh: readIngressSsh, waitRoute: waitIngressRoute, checkRoute: checkIngressRoute };
 
 export async function controlSandboxSsh(
     stackPath: string,
@@ -116,9 +116,9 @@ export async function controlSandboxSsh(
             if (action === "start") throw new Error(error);
             return { ...state, error };
         }
-        // Reject an unmigrated project before starting SSH or waiting on a
+        // Reject a project not started with ingress before starting SSH or waiting on a
         // route that the reconciler cannot publish. Stopping always remains possible.
-        if (ingress.enabled() && action === 'start') await ingress.requireMigration(projectName);
+        if (ingress.enabled() && action === 'start') await ingress.requireSandbox(projectName);
         const result = await execDockerWithTimeout(deps.execDocker, [
             "exec", "--user", "1000:1000", ids[0],
             "/bin/bash", "/usr/local/ai-cli-bin/ssh-control.sh", action,
@@ -155,7 +155,7 @@ export async function controlSandboxSsh(
             state.port = connectionPort;
             // No reservation: SSH was never enabled, so there is no route to check or wait for.
             if (action === 'status') {
-                try { await ingress.requireMigration(projectName); }
+                try { await ingress.requireSandbox(projectName); }
                 catch (error) { return { ...state, enabled: daemon.enabled, running: daemon.running, error: String(error) }; }
                 if (!published && daemon.running) {
                     return { ...state, enabled: daemon.enabled, running: true, error: SSH_NOT_ENABLED_ERROR };

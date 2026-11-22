@@ -45,7 +45,7 @@ function within(child: string, parent: string): boolean {
 }
 
 /** Install locations of the agent toolchain under the home directory (they must stay readable). */
-export function toolchainReadRoots(searchPath: string, home = os.homedir()): string[] {
+function toolchainReadRoots(searchPath: string, home = os.homedir()): string[] {
     const roots = new Set<string>();
     for (const name of TOOLCHAIN) {
         for (const dir of searchPath.split(":").filter(Boolean)) {
@@ -64,7 +64,7 @@ export function toolchainReadRoots(searchPath: string, home = os.homedir()): str
 }
 
 /** PATH without directories the profile denies reading. */
-export function readablePath(searchPath: string, denyRead: string[], allowRead: string[]): string {
+function readablePath(searchPath: string, denyRead: string[], allowRead: string[]): string {
     return searchPath.split(":").filter(Boolean).filter(dir => {
         const resolved = real(dir);
         return !denyRead.some(deny => within(resolved, deny)) || allowRead.some(allow => within(resolved, allow));
@@ -75,7 +75,7 @@ export function readablePath(searchPath: string, denyRead: string[], allowRead: 
  * Write denies for files that run code when the repository is merely opened on the host.
  * Literals cover the root; globs (regex rules in Seatbelt) cover nested copies.
  */
-export function repoWriteDenies(dir: string): string[] {
+function repoWriteDenies(dir: string): string[] {
     if (/[*?[\]]/.test(dir)) throw new Error(`protected repo path contains glob characters; refusing to start unconfined denies: ${dir}`);
     const literals = [".git/hooks", ".git/config", ".git/config.worktree", ".git/modules", ".gitmodules", ".mcp.json",
         ".claude/settings.json", ".claude/settings.local.json", ".claude/commands", ".claude/agents", ".vscode", ".idea"];

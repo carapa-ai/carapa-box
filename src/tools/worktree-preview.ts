@@ -2,12 +2,11 @@
 // a stack, so each conf name carries its owner (the compose project name):
 // `<projectName>@<branch>.conf`. Owners and branches are slugs that may contain
 // `-`, `--`, `.` and `_` but never `@`, so the first `@` splits the name
-// unambiguously and no owner can match another owner's prefix. Legacy unprefixed
-// `<branch>.conf` files cannot contain `@`: they never parse as owned, keep their
-// port reserved and are never pruned, overwritten or removed.
+// unambiguously and no owner can match another owner's prefix. An owner only prunes, overwrites
+// or removes its own confs; other owners' confs keep their port reserved.
 
-export const PREVIEW_PORT_MIN = 8081;
-export const PREVIEW_PORT_MAX = 8980;
+const PREVIEW_PORT_MIN = 8081;
+const PREVIEW_PORT_MAX = 8980;
 
 const SLUG_RE = /^[a-z0-9][a-z0-9._-]*$/i;
 const OWNER_SEPARATOR = "@";
@@ -22,7 +21,7 @@ export function previewConfName(owner: string, branch: string): string {
     return `${owner}${OWNER_SEPARATOR}${branch}.conf`;
 }
 
-/** Split `<owner>@<branch>.conf`; undefined for legacy or malformed names. */
+/** Split `<owner>@<branch>.conf`; undefined for names without a valid owner prefix. */
 export function parsePreviewConfName(file: string): { owner: string; branch: string } | undefined {
     if (!file.endsWith(".conf")) return undefined;
     const stem = file.slice(0, -5);
@@ -32,11 +31,6 @@ export function parsePreviewConfName(file: string): { owner: string; branch: str
     const branch = stem.slice(at + 1);
     if (!SLUG_RE.test(owner) || !SLUG_RE.test(branch)) return undefined;
     return { owner, branch };
-}
-
-/** True when the conf file belongs to `owner`. */
-export function isOwnedPreviewConf(file: string, owner: string): boolean {
-    return parsePreviewConfName(file)?.owner === owner;
 }
 
 /**
@@ -79,7 +73,7 @@ export function buildPreviewSyncScript(opts: {
         `  b=$(basename "$f" .conf)`,
         `  p=$(sed -n "s/.*listen[[:space:]][[:space:]]*\\([0-9][0-9]*\\).*/\\1/p" "$f" | head -n1)`,
         `  if [ "$b" = "$pre$branch" ]; then reuse=$p; continue; fi`,
-        // Only this owner's confs may be pruned; foreign and legacy ones stay and keep their port.
+        // Only this owner's confs may be pruned; foreign ones stay and keep their port.
         `  case "$b" in "$pre"*) mine=1 ;; *) mine= ;; esac`,
         `  if [ -n "$prune" ] && [ -n "$mine" ]; then case "$live" in *,"\${b#"$pre"}",*) used="$used $p" ;; *) rm -f "$f"; continue ;; esac; else used="$used $p"; fi`,
         `done`,

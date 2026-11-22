@@ -20,7 +20,7 @@ export interface VmImage {
     path: string;
 }
 
-export interface DockerResult { code: number; out: string }
+interface DockerResult { code: number; out: string }
 /** Runs a program (docker, sh); injected by tests. */
 export type DockerExec = (argv: string[], options?: { timeoutMs?: number }) => Promise<DockerResult>;
 
@@ -88,7 +88,7 @@ export class VmAssets {
                 if (entries.length) {
                     // A short root container writes the links; the stopped container is what gets exported.
                     // The name is set before `docker run`, so a failed run (created, exited non-zero) is removed below too.
-                    container = `os-runner-vm-${randomBytes(4).toString("hex")}`;
+                    container = `carapa-runner-vm-${randomBytes(4).toString("hex")}`;
                     const script = 'while [ "$#" -gt 1 ]; do rm -rf "$1"; mkdir -p "$(dirname "$1")"; ln -s "$2" "$1"; shift 2; done';
                     await this.run(["run", "--user", "0", "--name", container, "--entrypoint", "sh", ref, "-c", script, "sh", ...entries.flat()], `link paths in ${ref}`);
                 } else {

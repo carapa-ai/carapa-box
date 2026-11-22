@@ -3,7 +3,7 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { INGRESS_CONTAINER, assertIngressStatePrivate, atomicJson, checkIngressRoute, reconcileIngress, requireIngressMigration, reserveIngressPort, setIngressProjectActive, setIngressSsh } from './ingress.js';
+import { INGRESS_CONTAINER, assertIngressStatePrivate, atomicJson, checkIngressRoute, reconcileIngress, requireIngressSandbox, reserveIngressPort, setIngressProjectActive, setIngressSsh } from './ingress.js';
 import { onlyMissingDockerObjects } from './utils.js';
 import { reserveInstanceNetwork } from './compose/network-reservations.js';
 
@@ -92,7 +92,7 @@ test('controller derives routes from owned isolated containers and revokes on di
     let revocations = 0;
     const publishing = {
         directory: deps.directory, enabled: () => true, proxyEnabled: () => false,
-        migrate: (project: string) => requireIngressMigration(project, deps),
+        requireSandbox: (project: string) => requireIngressSandbox(project, deps),
         reserve: (target: any) => reserveIngressPort(target, deps),
         route: async () => {},
         checkHostname: async () => '',
@@ -197,7 +197,7 @@ test('new ingress attachments leave stopped proxies reserved addresses available
         Config: { Labels: { 'com.docker.compose.project': 'stopped-proxies', 'com.docker.compose.service': 'agent' } },
         NetworkSettings: { Networks: { [name]: { IPAddress: '172.26.1.11' } }, Ports: {} },
     };
-    const network = { Name: name, Internal: true, Driver: 'bridge',
+    const network = { Name: name, Internal: true, Driver: 'bridge', Labels: { 'ai.carapa.explicit-instance-subnet': '1' },
         IPAM: { Driver: 'default', Config: [{ Subnet: '172.26.1.0/24', Gateway: '172.26.1.1' }] },
         Containers: { [agent.Id]: { Name: agent.Name.slice(1), IPv4Address: '172.26.1.11/24' } },
     };
@@ -218,7 +218,7 @@ test('new ingress attachments leave stopped proxies reserved addresses available
             }
             throw new Error(`Unexpected command ${args}`);
         }) as any };
-    const saved = (await reserveInstanceNetwork('stopped-proxies', false, { directory: deps.networkDirectory, execDocker: deps.execDocker }))!;
+    const saved = await reserveInstanceNetwork('stopped-proxies', { directory: deps.networkDirectory, execDocker: deps.execDocker });
     await reserveIngressPort({ project: 'stopped-proxies', service: 'agent', kind: 'http', targetPort: 3100 }, deps);
     await atomicJson(path.join(deps.directory, 'targets/stopped-proxies.json'), [{ service: 'agent', targetPort: 3100 }]);
     await setIngressProjectActive('stopped-proxies', true, deps);
@@ -227,17 +227,17 @@ test('new ingress attachments leave stopped proxies reserved addresses available
     expect([saved.agentIp, saved.gateway, ...Object.values(saved.proxyIps)]).not.toContain(snapshot.routes[0].sourceIp);
 });
 
-test('migration readiness requires an active project and its saved Compose model and targets', async () => {
+test('ingress sandbox check requires an active project and its saved Compose model and targets', async () => {
     const deps = { directory: path.join(root, 'migration-ready'), execDocker: null as any };
-    await expect(requireIngressMigration('legacy', deps)).rejects.toThrow('Restart the sandbox');
+    await expect(requireIngressSandbox('legacy', deps)).rejects.toThrow('Start the sandbox');
     await atomicJson(path.join(deps.directory, 'projects/legacy.json'), { active: true });
-    await expect(requireIngressMigration('legacy', deps)).rejects.toThrow('Restart the sandbox');
+    await expect(requireIngressSandbox('legacy', deps)).rejects.toThrow('Start the sandbox');
     await atomicJson(path.join(deps.directory, 'compose/legacy.json'), {});
-    await expect(requireIngressMigration('legacy', deps)).rejects.toThrow('Restart the sandbox');
+    await expect(requireIngressSandbox('legacy', deps)).rejects.toThrow('Start the sandbox');
     await atomicJson(path.join(deps.directory, 'targets/legacy.json'), []);
-    await requireIngressMigration('legacy', deps);
+    await requireIngressSandbox('legacy', deps);
     await atomicJson(path.join(deps.directory, 'projects/legacy.json'), { active: false });
-    await expect(requireIngressMigration('legacy', deps)).rejects.toThrow('Restart the sandbox');
+    await expect(requireIngressSandbox('legacy', deps)).rejects.toThrow('Start the sandbox');
 });
 
 test('batched discovery stays constant across projects and refreshes isolation evidence every pass', async () => {

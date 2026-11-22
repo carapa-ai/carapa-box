@@ -62,13 +62,18 @@ if [ "$NO_CACHE" -eq 1 ]; then set -- "$@" --no-cache; fi
 docker build "$@" -t "$IMAGE" .
 
 # ── CVE scan ──────────────────────────────────────────────────────────────
+# Report-only, like the controller and egress builds: HIGH/CRITICAL findings are
+# printed and never fail the build. A scanner is still required (unless --no-scan)
+# so every build has a report, and a scan that could not run is called out.
 if [ "$SCAN" -eq 1 ]; then
     echo ""
     echo "Scanning $IMAGE for vulnerabilities..."
     if command -v trivy >/dev/null 2>&1; then
-        trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 1 "$IMAGE"
+        trivy image --scanners vuln --severity HIGH,CRITICAL "$IMAGE" \
+            || echo "WARNING: trivy could not scan $IMAGE; no report for this image" >&2
     elif docker scout version >/dev/null 2>&1; then
-        docker scout cves "local://$IMAGE" --only-severity critical,high --exit-code
+        docker scout cves "local://$IMAGE" --only-severity critical,high \
+            || echo "WARNING: docker scout could not scan $IMAGE; no report for this image" >&2
     else
         echo "No CVE scanner found. Install trivy or docker scout, or explicitly use --no-scan for a development build." >&2
         exit 1

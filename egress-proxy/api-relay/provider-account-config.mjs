@@ -4,7 +4,7 @@ import path from 'node:path';
 export const ACCOUNT_PROVIDERS = ['anthropic', 'codex', 'antigravity', 'meta', 'xai', 'cursor'];
 // API-key accounts: the admin pastes a key instead of signing in. Each name is
 // the relay route the key serves; a host here applies when no route config sets one.
-export const KEY_PROVIDERS = {
+const KEY_PROVIDERS = {
   'mistral-eu': {},
   'mistral-vibe': { host: 'api.eu.mistral.ai' },
   openrouter: {},
@@ -31,7 +31,7 @@ export const CODE_HOST_PROVIDERS = ['gitlab', 'github'];
 export const INTEGRATION_PROVIDERS = ['gitlab', 'github', 'custom'];
 const MAX_PROJECT_CONTAINERS = 32;
 const MAX_ALLOW_RULES = 32;
-export const ALLOW_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+const ALLOW_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 // `*` stands for exactly one segment; a literal segment uses this alphabet,
 // so no encoded, dotted or matrix spelling can match a rule.
 const RULE_SEGMENT = /^[A-Za-z0-9_.~+=:@-]+$/;
@@ -48,7 +48,7 @@ export const validAllowRule = rule => !!rule && typeof rule === 'object' && !Arr
   rule.path.startsWith('/') && ruleSegments(rule.path).every(validRuleSegment);
 export const validAllowRules = rules => Array.isArray(rules) && rules.length >= 1 && rules.length <= MAX_ALLOW_RULES && rules.every(validAllowRule);
 // Docker container names, without the network suffix the relay sees after the first dot.
-export const validContainerName = value => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(value);
+const validContainerName = value => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(value);
 export const validContainers = list => Array.isArray(list) && list.length >= 1 && list.length <= MAX_PROJECT_CONTAINERS &&
   list.every(validContainerName) && new Set(list).size === list.length;
 const PROJECT_PART = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
@@ -99,7 +99,7 @@ export function validTokenAuth(auth) {
   }
 }
 /** The fixed route, base path and token header of the GitLab and GitHub presets. */
-export function integrationPreset(provider, host) {
+function integrationPreset(provider, host) {
   if (provider === 'gitlab') return { route: 'gitlab', host, pathPrefix: '', auth: { type: 'header', name: 'private-token' } };
   if (provider === 'github') return { route: 'github', ...githubApi(host), auth: { type: 'bearer' } };
   return null;

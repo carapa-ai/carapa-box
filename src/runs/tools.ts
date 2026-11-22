@@ -30,14 +30,14 @@ const ProjectSchema = {
 type ProjectArgs = { tree?: "ipc" | "group"; project?: string; name?: string; instance?: string };
 
 /** A project's group directory on this box (multi-host placement). */
-export function groupStore(folder: string): IpcStore {
+function groupStore(folder: string): IpcStore {
     const segments = validateRelativePath(folder);
     if (segments.length !== 1) throw new Error(`Invalid group folder: ${folder}`);
     return new IpcStore(path.join(resolveGroupsRoot(), folder));
 }
 
 /** Resolve the project-scoped IPC store for a stack instance or an IPC project name. */
-export async function projectIpcStore({ tree, project, name, instance }: ProjectArgs): Promise<IpcStore> {
+async function projectIpcStore({ tree, project, name, instance }: ProjectArgs): Promise<IpcStore> {
     if (tree === "group") {
         if (!project) throw new Error("tree='group' requires project (the group folder)");
         return groupStore(project);
@@ -61,7 +61,7 @@ export async function projectIpcStore({ tree, project, name, instance }: Project
  * root-owned bind mount is moved aside (never deleted) when the caller has
  * confirmed the whole stack is stopped.
  */
-export async function prepareRunsDir(store: IpcStore, archiveUnwritable: boolean): Promise<{ archivedTo?: string }> {
+async function prepareRunsDir(store: IpcStore, archiveUnwritable: boolean): Promise<{ archivedTo?: string }> {
     const runs = path.join(store.projectDir, "runs");
     try {
         await fsp.mkdir(runs, { recursive: true });
@@ -79,7 +79,7 @@ export async function prepareRunsDir(store: IpcStore, archiveUnwritable: boolean
 }
 
 /** IPC project directories under every stack's IPC root. */
-export async function listIpcProjects(): Promise<string[]> {
+async function listIpcProjects(): Promise<string[]> {
     const listed = await listStacks();
     const roots = new Set<string>();
     for (const stack of listed) {

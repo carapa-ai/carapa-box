@@ -51,8 +51,9 @@ python3 harness.py install codex
 For a local build, first authenticate with `docker login dhi.io`, then replace
 the pull with `./build.sh`. DHI credentials are needed by the builder; consumers
 pulling the completed public image from Docker Hub do not need DHI access.
-The build runs a Trivy/Scout HIGH/CRITICAL gate and fails if no scanner is installed.
-`--no-cache` refreshes runtime packages; `--no-scan` explicitly skips the gate for
+The build prints a Trivy/Scout HIGH/CRITICAL report without failing on findings, and
+fails if no scanner is installed. Review the report before publishing.
+`--no-cache` refreshes runtime packages; `--no-scan` explicitly skips the scan for
 development. The build never installs or
 updates harnesses. `VERSION` supplies the OCI version label; bump it and the
 Compose/config defaults together for a runtime release. The runtime CVE scan does
@@ -104,9 +105,8 @@ python3 harness.py install none              # initialize with no harnesses
 
 Supported names: `codex`, `claude`, `opencode`, `pi`, `omp`, `cursor`, `hermes`,
 `prime-agent`, `antigravity` (Python SDK), `antigravity-acp`, `muse`, `grok`, `vibe`, and `playwright`.
-Yarn is supplied by the Debian/Alpine runtime image as package-manager tooling;
-legacy volume entries remain accepted by the installer but are not selectable in
-the TUI. Unspecified package versions resolve upstream stable/default releases.
+Yarn is supplied by the Debian/Alpine runtime image as package-manager tooling,
+not by the installer. Unspecified package versions resolve upstream stable/default releases.
 Cursor, Prime and Muse Code use their upstream installers and support `latest` only.
 Muse also installs the community `@brokkai/muse-acp` bridge pinned at **0.13.1** (glibc only).
 Grok Build is adapter-tested at **1.0.52** (glibc only), Mistral Vibe at **3.1.0** (glibc only).
@@ -133,7 +133,7 @@ Offline validation checks the runtime ABI, executable paths, Python imports and
 CLI startup. An installation/validation failure leaves the previous selection
 active. Sandboxes never install packages at startup.
 
-After the one-time migration, a fresh agent run snapshots the current selection.
+A fresh agent run snapshots the current selection.
 Its children and detached processes inherit that snapshot. Existing processes
 and warm conversation daemons keep their original releases; new conversations
 or restarted harness daemons pick up updates without restarting the sandbox.
@@ -147,17 +147,12 @@ protect detached descendants: versions used in a long-running sandbox stay on
 disk until that sandbox eventually stops. gVisor locks are not shared with the
 host, so cleanup does not rely on `flock` to detect readers. Pending launches,
 paused/restarting containers or inaccessible consumers cause cleanup to skip
-deletions. Legacy named volumes are left untouched by release cleanup.
+deletions.
 
-Migration from the previous one-volume-per-update layout requires a runtime
-rebuild/pull with these launcher changes, the updated AppArmor profile (including
-read/execute access to `/opt/carapa-harness-store/**`), and one CarapaBox recreation
-of each intended sandbox to adopt the two read-only mounts. Run the updater to
-prepare its stable store first. Subsequent package-only updates need no rebuild
-or recreation. Provider login needs `PROVIDER_LOGIN_HARNESS_VOLUME` set once to
-the chosen stable store and an updated controller; subsequent login workers use
-the current harness releases automatically. Distribution/runtime ABI changes
-still require a matching image and sandbox recreation.
+Provider login needs `PROVIDER_LOGIN_HARNESS_VOLUME` set once to the chosen store
+and an updated controller; subsequent login workers use the current harness releases
+automatically. Distribution/runtime ABI changes still require a matching image and
+sandbox recreation.
 
 Runtime compatibility records architecture, Node major, Python major/minor and
 libc alongside the layout version. An ABI mismatch requires `install --replace`
@@ -248,7 +243,7 @@ Authentication to fetch the base is independent of redistribution permission.
 For publishing with Docker Scout's inherited DHI VEX support, build with
 `--provenance=mode=max --sbom=true` and an attestation-capable image store/exporter;
 see [Docker's child-image scanning instructions](https://docs.docker.com/dhi/how-to/scan/).
-The ordinary local build uses the unsuppressed scanner gate. Review the applicability
+The ordinary local build prints the unsuppressed scanner report. Review the applicability
 of vendor VEX to the completed agent image before adopting any suppression.
 
 Publish runtime releases when the OS, runtimes, CarapaBot commands/adapters, or
@@ -518,8 +513,11 @@ entrypoint; Board UI wiring is a separate change.
 Every supported adapter emits `output.v1.jsonl` and `output.v1.meta.json`.
 Their schemas live in `bin/runtime/schema/`. The stream normalizes sessions,
 messages, tools, usage, interactions and terminal run status. Exact provider
-frames remain available in harness-specific raw sidecars; compatibility
-`output.jsonl` remains available for existing Board consumers.
+frames remain available in harness-specific raw sidecars. This pair is the
+run output. A failed run's
+terminal `run` event carries the provider's or session's failure text in
+`error.message` (Codex also `error.details` with `additionalDetails` /
+`codexErrorInfo`), including failures before the turn starts.
 
 Codex, ACP, Pi and Claude share incremental journal reading and the detached supervisor;
 Codex and ACP also share correlated JSON-RPC requests with validation,
@@ -685,13 +683,10 @@ internal-only network. The sidebar shows the current address while SSH is
 running and copies `ssh -p 2222 ubuntu@<sandbox-ip>` for use on the Docker host.
 CarapaBox reserves the instance's subnet and agent address and injects
 `AGENT_IPV4_ADDRESS` into Compose. The address survives Board stop/start,
-container recreation, image rebuilds, and controller restarts. On the first
-managed restart, Box captures an existing agent's address before removing it.
-It then migrates the instance network to an explicitly configured subnet while
-the agent is stopped, retaining the saved agent and proxy addresses. A direct
-start of an already-running legacy instance asks you to stop it first rather
-than disconnecting it. New networks also use explicit IPAM before attaching
-containers, so Docker accepts their static addresses.
+container recreation, image rebuilds, and controller restarts. Instance
+networks use explicit IPAM before containers attach, so Docker accepts their
+static addresses. A network without the explicit-subnet label is rejected:
+recreate the sandbox.
 Manual Compose launches without `AGENT_IPV4_ADDRESS` still use dynamic addressing.
 
 Reservations live in CarapaBox's persistent
@@ -795,8 +790,8 @@ registry and sockets, including unrecorded runs. Warm harness daemons resolve
 the session's `active_run` pointer on every CLI invocation. Proxy settings
 remain inherited. The protocol ownership version retires older warm daemons at
 the next turn, preserving their native resume state while installing the new
-context forwarding. Legacy runs without `CARAPA_BROWSER_RUN_ID` keep their
-original CLI environment during upgrades. `CARAPA_BROWSER_SESSION_ID` pins a
+context forwarding. Manual `playwright-cli` use outside a managed run, without
+`CARAPA_BROWSER_RUN_ID`, keeps the plain CLI environment. `CARAPA_BROWSER_SESSION_ID` pins a
 conversation browser and its canonical working directory across turns, including
 commands from subdirectories. Repeated `open` navigates the existing browser;
 `open` without a URL keeps the current page. Agent `close`/`kill-all` cannot

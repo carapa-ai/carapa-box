@@ -74,7 +74,7 @@ function fixture(project: string) {
 
 test('ingress service allocation preserves stopped proxy slots and existing service addresses', async () => {
     const f = fixture('extra-services');
-    const saved = (await reserveInstanceNetwork('extra-services', true, f.deps))!;
+    const saved = (await reserveInstanceNetwork('extra-services', f.deps))!;
     // No proxy endpoints are live: Docker would treat every saved slot as free.
     f.state.network.Containers.nginx = { Name: 'extra-services-nginx-1', IPv4Address: '172.16.0.98/28' };
     const model = { services: {
@@ -102,8 +102,8 @@ test('ingress service allocation preserves stopped proxy slots and existing serv
 test("new instances use explicit IPAM and preserve reservations through controller and network recreation", async () => {
     const f = fixture("new-instance");
     const [reservation, concurrent] = await Promise.all([
-        reserveInstanceNetwork("new-instance", true, f.deps),
-        reserveInstanceNetwork("new-instance", true, f.deps),
+        reserveInstanceNetwork("new-instance", f.deps),
+        reserveInstanceNetwork("new-instance", f.deps),
     ]);
     expect(reservation).toEqual(concurrent);
     expect(f.calls.filter(args => args[1] === "rm")).toHaveLength(1);
@@ -117,52 +117,36 @@ test("new instances use explicit IPAM and preserve reservations through controll
     const recoveredDeps = { ...f.deps };
     expect(await readNetworkReservation(f.name, recoveredDeps)).toEqual(reservation);
     f.state.network = undefined; // External prune: recover the same subnet, not a fresh allocation.
-    expect(await reserveInstanceNetwork("new-instance", true, recoveredDeps)).toEqual(reservation);
+    expect(await reserveInstanceNetwork("new-instance", recoveredDeps)).toEqual(reservation);
     expect(f.state.network.IPAM.Config[0].Subnet).toBe(reservation!.subnet);
     expect(f.calls.at(-2)).toContain("--subnet");
 });
 
-test("legacy migration captures the live address but only replaces the network after agent teardown", async () => {
-    const f = fixture("legacy");
+test("an instance network without the subnet label is rejected, never repaired in place", async () => {
+    const f = fixture("unlabelled");
     f.createLegacy();
-    f.state.agentIp = "172.16.0.102";
-    f.state.network.Containers["agent-id"] = { Name: "legacy-agent-1", IPv4Address: "172.16.0.102/28" };
     INSTANCE_PROXIES.forEach((proxy, index) => {
         f.state.network.Containers[proxy.container] = { Name: proxy.container, IPv4Address: `172.16.0.${98 + index}/28` };
     });
-    const reservation = await reserveInstanceNetwork("legacy", false, f.deps);
-    expect(reservation!.agentIp).toBe("172.16.0.102");
+    await expect(reserveInstanceNetwork("unlabelled", f.deps)).rejects.toThrow("recreate this sandbox");
     expect(f.calls.some(args => ["rm", "disconnect", "create"].includes(args[1]))).toBe(false);
-    await expect(reserveInstanceNetwork("legacy", true, f.deps)).rejects.toThrow("Stop legacy");
-    expect(f.calls.some(args => args[1] === "disconnect")).toBe(false);
-    delete f.state.network.Containers["agent-id"];
-    f.state.agentIp = "";
-    expect(await reserveInstanceNetwork("legacy", true, f.deps)).toEqual(reservation);
-    expect((await connectInstanceProxies(f.name, f.deps)).every(result => result.result.status === 0)).toBe(true);
-    INSTANCE_PROXIES.forEach((proxy, index) => {
-        expect(f.state.network.Containers[proxy.container].IPv4Address).toBe(`172.16.0.${98 + index}/28`);
-    });
-    const removes = f.calls.filter(args => args[1] === "rm").length;
-    await reserveInstanceNetwork("legacy", true, f.deps);
-    expect(f.calls.filter(args => args[1] === "rm")).toHaveLength(removes);
 });
 
-test("failed subnet recovery preserves the durable address and refuses conflicting or foreign networks", async () => {
+test("failed subnet recovery preserves the durable address and refuses conflicting or unlabelled networks", async () => {
     const f = fixture("recovery");
     f.state.failExplicitCreate = true;
-    await expect(reserveInstanceNetwork("recovery", true, f.deps)).rejects.toThrow("Cannot restore reserved subnet");
+    await expect(reserveInstanceNetwork("recovery", f.deps)).rejects.toThrow("Cannot restore reserved subnet");
     const saved = await readNetworkReservation(f.name, f.deps);
     expect(saved).toBeDefined();
     f.state.failExplicitCreate = false;
-    expect(await reserveInstanceNetwork("recovery", true, f.deps)).toEqual(saved);
+    expect(await reserveInstanceNetwork("recovery", f.deps)).toEqual(saved!);
     f.state.network.IPAM.Config[0] = { Subnet: "172.16.0.112/28", Gateway: "172.16.0.113" };
-    await expect(reserveInstanceNetwork("recovery", true, f.deps)).rejects.toThrow("no longer matches");
+    await expect(reserveInstanceNetwork("recovery", f.deps)).rejects.toThrow("no longer matches");
     f.state.network.IPAM.Config[0] = { Subnet: saved!.subnet, Gateway: saved!.gateway };
     f.state.network.Labels = {};
-    f.state.network.Containers.foreign = { Name: "unrelated-container", IPv4Address: "172.16.0.103/28" };
-    const before = f.calls.filter(args => args[1] === "disconnect").length;
-    await expect(reserveInstanceNetwork("recovery", true, f.deps)).rejects.toThrow("non-proxy containers");
-    expect(f.calls.filter(args => args[1] === "disconnect")).toHaveLength(before);
+    const before = f.calls.length;
+    await expect(reserveInstanceNetwork("recovery", f.deps)).rejects.toThrow("recreate this sandbox");
+    expect(f.calls.slice(before).every(args => args[1] === "inspect")).toBe(true);
 });
 
 
@@ -198,32 +182,9 @@ test('startup recovery skips existing proxy attachments and bounds work across m
 });
 
 
-test("legacy service identity is adopted only from the existing owner without renumbering", async () => {
-    const f = fixture("php-legacy");
-    f.createLegacy();
-    f.state.agentIp = "172.16.0.102";
-    f.state.service = "php84";
-    const original = await reserveInstanceNetwork("php-legacy", false, f.deps, "php84");
-    const legacy = { ...original! };
-    delete legacy.service;
-    const file = path.join(f.deps.directory, `${f.name}.json`);
-    await fs.writeFile(file, JSON.stringify(legacy));
-    f.state.agentIp = "172.16.0.103";
-    await expect(reserveInstanceNetwork("php-legacy", false, f.deps, "php84")).rejects.toThrow("Cannot verify legacy reservation owner");
-    expect(await readNetworkReservation(f.name, f.deps)).toEqual(legacy);
-    f.state.agentIp = legacy.agentIp;
-    f.state.service = "foreign";
-    await expect(reserveInstanceNetwork("php-legacy", false, f.deps, "php84")).rejects.toThrow("Cannot verify legacy reservation owner");
-    f.state.service = "php84";
-    expect(await reserveInstanceNetwork("php-legacy", false, f.deps, "php84")).toEqual(original);
-    f.state.agentIp = ""; // Later restart can recover even after the old container is gone.
-    expect(await reserveInstanceNetwork("php-legacy", false, f.deps, "php84")).toEqual(original);
-    await expect(reserveInstanceNetwork("php-legacy", false, f.deps, "agent")).rejects.toThrow("different service");
-});
-
 test('retired playwright-mcp proxy is never connected and its stale reservation key is tolerated', async () => {
     const f = fixture('retired-proxy');
-    const reservation = (await reserveInstanceNetwork('retired-proxy', true, f.deps))!;
+    const reservation = (await reserveInstanceNetwork('retired-proxy', f.deps))!;
     expect(Object.keys(reservation.proxyIps)).not.toContain('playwright-mcp');
     expect((await connectInstanceProxies(f.name, f.deps)).every(result => result.result.status === 0)).toBe(true);
     f.state.network.Containers = {};

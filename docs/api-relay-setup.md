@@ -191,39 +191,28 @@ reference.
    once after an upstream 401 as a fallback. Rotated tokens are written back to
    the account directory.
 
-2. Place a **dummy `.credentials.json`** in the agent keys folder so
-   Claude Code detects an OAuth session but the real token never leaves
-   the host. The relay overwrites the auth header anyway:
-
-   ```json
-   {
-     "claudeAiOauth": {
-       "accessToken": "sk-ant-oat01-DUMMY",
-       "refreshToken": "sk-ant-ort01-DUMMY",
-       "expiresAt": 1772324404815,
-       "scopes": [
-         "user:inference",
-         "user:mcp_servers",
-         "user:profile",
-         "user:sessions:claude_code"
-       ],
-       "subscriptionType": "max",
-       "rateLimitTier": "default_claude_max_5x"
-     },
-     "organizationUuid": "<org-id>"
-   }
-   ```
-
-   Save as `$AGENT_HOME/.claude/.credentials.json`. Without this
-   file, Claude Code won't start in OAuth mode and won't send requests
-   through `ANTHROPIC_BASE_URL`.
-
-3. In `carapa-bot/docker-compose.yml`, the agent gets:
+2. Nothing Claude-specific goes into the agent. `carapa-bot/docker-compose.yml`
+   gives it a placeholder key and the relay route:
    ```yaml
    environment:
-     - ANTHROPIC_API_KEY=placeholder
+     - ANTHROPIC_API_KEY=sk-ant-dummy-routed-via-relay
      - ANTHROPIC_BASE_URL=http://api-relay:8080/anthropic
    ```
+   Claude Code sends that placeholder as `x-api-key` to the relay, which
+   replaces the authentication with the account's real OAuth token (an
+   `Authorization: Bearer` placeholder is replaced the same way). The token
+   never enters the sandbox.
+
+3. Keep `$AGENT_HOME/.claude/.credentials.json` free of a `claudeAiOauth`
+   entry (see the README's agent-home setup, which removes the file). Claude
+   Code 2.x gives `ANTHROPIC_API_KEY` precedence over it anyway, and a
+   placeholder there only produces the warning *claude.ai connectors are
+   disabled because ANTHROPIC_API_KEY … takes precedence*.
+
+4. On a box connected to a hub (`RELAY_MODE=forward`), the relay holds no
+   provider credentials: connect the account on the hub's Board. Accounts
+   connected on the box's own Board are not used, and calls fail with
+   `Forwarder not authorized` when the hub rejects the box.
 
 ### Auth: static API key
 

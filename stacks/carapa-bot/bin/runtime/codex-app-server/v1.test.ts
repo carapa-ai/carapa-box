@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RunV1Writer, type CarapaRunEventV1 } from '../run-v1';
 import { createPlanRenderer } from './plans';
-import { translateMessage } from './translator';
 import type { CodexRunnerArgs, RpcMessage } from './types';
 import { CodexRunV1Adapter } from './v1';
 
@@ -56,8 +55,6 @@ describe('Codex V1 native plans', () => {
     const text = '# Search history\n\nIndex archived transcripts.';
     const completion = complete(text);
     value.adapter.consume(completion);
-    // The compatibility stream must reuse the artifact saved by canonical output.
-    const legacy = translateMessage(value.args, completion, value.renderPlan);
     value.adapter.consume(completion);
     value.adapter.consume(delta('late duplicate'));
     value.adapter.consume({ method: 'turn/completed', params: {
@@ -69,7 +66,6 @@ describe('Codex V1 native plans', () => {
     const answer = messages[1];
     expect(answer.status).toBe('completed');
     expect(answer.content).toStartWith(text);
-    expect(legacy?.item).toEqual({ id: 'native-plan', type: 'agent_message', text: answer.content });
     const card = JSON.parse(answer.content.match(/```carapaplan\n([^\n]+)/)![1]);
     expect(card.planText).toBe(text);
     expect(readFileSync(join(value.root, card.artifactPath), 'utf8')).toBe(`${text}\n`);
@@ -78,6 +74,17 @@ describe('Codex V1 native plans', () => {
     expect(readdirSync(join(value.root, 'artifacts', 'plans'))).toHaveLength(2);
     expect(value.events().filter((event) => event.type === 'message_delta')).toHaveLength(2);
     expect(value.events().at(-1)).toMatchObject({ type: 'run', status: 'completed' });
+  });
+
+  test('keeps the provider error extras on the error event and the failed terminal', () => {
+    const value = fixture();
+    value.adapter.consume({ method: 'error', params: { willRetry: true, error: { message: 'retrying' } } });
+    value.adapter.consume({ method: 'error', params: { willRetry: false, error: { message: 'x', additionalDetails: 'invalid_encrypted_content', codexErrorInfo: 'other' } } });
+    value.adapter.finish();
+    const events = value.events();
+    expect(events.find((event) => event.type === 'error' && event.message === 'retrying')).not.toHaveProperty('details');
+    expect(events.at(-2)).toMatchObject({ type: 'error', message: 'x', fatal: true, details: { additionalDetails: 'invalid_encrypted_content', codexErrorInfo: 'other' } });
+    expect(events.at(-1)).toMatchObject({ type: 'run', status: 'failed', error: { message: 'x', details: { additionalDetails: 'invalid_encrypted_content' } } });
   });
 
   test('accepts a completed plan without deltas', () => {

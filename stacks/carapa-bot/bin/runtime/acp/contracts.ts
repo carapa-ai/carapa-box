@@ -47,7 +47,6 @@ export interface AcpHarnessContract {
   readonly id: 'antigravity-acp' | 'cursor-acp' | 'grok-acp' | 'hermes-acp' | 'muse-acp' | 'omp-acp' | 'prime-agent-acp' | 'vibe-acp';
   readonly restore: AcpRestoreStrategy;
   readonly restoreFailure?: 'fail' | 'new-session';
-  readonly reportModel?: boolean;
   /** The agent takes a second `session/prompt` while one is running: it ends the first
    * at once and delivers the new text between steps of the same work. */
   readonly steerMidTurn?: boolean;

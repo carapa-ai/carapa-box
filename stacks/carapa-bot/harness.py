@@ -10,15 +10,13 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 import subprocess
 import sys
 import tempfile
 import uuid
 
 DEFAULT_STACK = Path(__file__).resolve().parent
-LABEL = 'ai.carapa.bot-harness'
-VOLUME_PATTERN = r'carapa-bot-harness-[0-9a-f]{32}'
+VOLUME_PATTERN = r'carapa-harness-live-[0-9a-f]{24}'
 sys.path.insert(0, str(DEFAULT_STACK / 'harness'))
 from live import Store as LiveStore, ROOT as LIVE_ROOT
 
@@ -89,19 +87,13 @@ class HarnessStore:
         for file in files:
             if file.exists():
                 selection = json.loads(file.read_text())
+                check_volume(selection.get('volume'))
                 if not self.variant or selection_variant(selection) == self.variant:
                     return selection
         if required:
             target = f' for {self.variant}' if self.variant else ''
             raise RuntimeError(f'No harness selection{target}. Run harness.py install <harness...> (or install none)')
         return None
-
-    def managed(self, volume):
-        if not re.fullmatch(VOLUME_PATTERN, volume):
-            raise ValueError('Not a public CarapaBot harness volume')
-        info = json.loads(run('docker', 'volume', 'inspect', volume, capture=True).stdout)[0]
-        if (info.get('Labels') or {}).get(LABEL) != 'true':
-            raise ValueError('Refusing an unmanaged volume')
 
     def container(self, image, volume, command, *, writable=False, network='none', extra=(), capture=False):
         return run('docker', 'run', '--rm', '--pull=never', '--network', network,
@@ -112,26 +104,21 @@ class HarnessStore:
                    '--mount', f'type=volume,src={volume},dst=/opt/carapa-harness,volume-nocopy' + ('' if writable else ',readonly'),
                    *extra, '--entrypoint', command[0], image, *command[1:], capture=capture)
 
-    def manifest(self, image, volume):
-        return json.loads(self.container(image, volume, ['/bin/cat', '/opt/carapa-harness/manifest.json'], capture=True).stdout)
-
     def verify(self, image, volume):
-        if volume.startswith('carapa-harness-live-'):
-            store = LiveStore(volume, image)
-            data = store.current()
-            store.python('import json,sys; from pathlib import Path; '
-                         'assert json.loads(sys.argv[1]) == json.loads(Path("/usr/local/share/carapa/harness-abi.json").read_text()), "Harness/runtime ABI mismatch"', json.dumps(data['abi']))
-            releases = {e['release'] for e in data['entries'].values()}
-            for release in releases:
-                store.helper(['python3', '/usr/local/lib/carapa-harness/verify.py'],
-                    extra=['-e', 'CARAPA_HARNESS_ROOT=' + LIVE_ROOT + '/releases/' + release,
-                        '--mount', f'type=bind,src={DEFAULT_STACK / "harness/verify.py"},dst=/usr/local/lib/carapa-harness/verify.py,readonly'])
-            return {'abi': data['abi'], 'harnesses': {n: e['package'] for n, e in data['entries'].items()}}
-        self.managed(volume)
-        self.container(image, volume, ['python3', '/usr/local/lib/carapa-harness/verify.py'])
-        return self.manifest(image, volume)
+        check_volume(volume)
+        store = LiveStore(volume, image)
+        data = store.current()
+        store.python('import json,sys; from pathlib import Path; '
+                     'assert json.loads(sys.argv[1]) == json.loads(Path("/usr/local/share/carapa/harness-abi.json").read_text()), "Harness/runtime ABI mismatch"', json.dumps(data['abi']))
+        releases = {e['release'] for e in data['entries'].values()}
+        for release in releases:
+            store.helper(['python3', '/usr/local/lib/carapa-harness/verify.py'],
+                extra=['-e', 'CARAPA_HARNESS_ROOT=' + LIVE_ROOT + '/releases/' + release,
+                    '--mount', f'type=bind,src={DEFAULT_STACK / "harness/verify.py"},dst=/usr/local/lib/carapa-harness/verify.py,readonly'])
+        return {'abi': data['abi'], 'harnesses': {n: e['package'] for n, e in data['entries'].items()}}
 
     def select(self, image, volume, manifest=None):
+        check_volume(volume)
         if manifest is None: manifest = self.verify(image, volume)
         variant = selection_variant({'manifest': manifest})
         if self.variant and variant != self.variant:
@@ -154,7 +141,7 @@ class HarnessStore:
             publish(self.state / 'variants' / variant)
         if not self.variant or self.image_ref == self.configured_image_ref:
             publish(self.state / 'active')
-            print(f'Selected {volume} for {self.image_ref}. Stable-store consumers use it on their next run; legacy consumers need one recreation.')
+            print(f'Selected {volume} for {self.image_ref}. Consumers use it on their next run.')
         else:
             print(f'Updated {variant}: {volume}. The active stack selection is unchanged.')
         return selection
@@ -226,13 +213,6 @@ class HarnessStore:
             wanted = {x.split('@')[0] for x in specs}
             entries = {n: e for n, e in entries.items() if n in wanted}
             specs = [x for x in specs if x.split('@')[0] not in entries or '@' in x]
-        if previous and not current and not replace and not configure:
-            # One-time migration: reinstall legacy packages at their resolved
-            # versions into final immutable paths. Never move a Python venv.
-            requested = {n: n if e['version'] == 'latest' else n + '@' + ('latest' if n in ('cursor', 'prime-agent') else e['version'])
-                         for n, e in old_harnesses.items()}
-            requested.update({x.split('@')[0]: x for x in specs})
-            specs = list(requested.values())
         # One broken harness must not block the others. A failed one keeps its
         # previous release (or stays absent) and is reported after publication.
         failed = {}
@@ -262,18 +242,8 @@ class HarnessStore:
         remaining = [n for n in selected['manifest']['harnesses'] if n not in names]
         self.install(remaining or ['none'], configure=True)
 
-    def migration_command(self):
-        return ['python3', str(DEFAULT_STACK / 'harness.py'), '--stack-dir', str(self.stack),
-                *(['--variant', self.variant] if self.variant else []), 'update']
-
     def cleanup(self, apply=False):
         selected = self.current()
-        if not selected['volume'].startswith('carapa-harness-live-'):
-            print('Cleanup skipped: the selected volume uses the legacy bundled format, without separate releases to clean up.')
-            print('Nothing was deleted. To install the selected harnesses into the new release store, run:')
-            print('  ' + shlex.join(self.migration_command()))
-            print('This downloads harnesses. Existing sandboxes keep their old volume until recreated with the new mounts.')
-            return
         removed = LiveStore(selected['volume'], self.image()).prune(apply=apply)
         print(('Removed ' if apply else 'Would remove ') + str(len(removed)) + ' unused releases: ' + ', '.join(removed))
 
@@ -291,6 +261,11 @@ class HarnessStore:
             '--entrypoint', 'python3', image, '-c',
             'import sys; sys.path.insert(0,"/usr/local/lib/carapa-harness"); '
             'from install import parse_spec; [parse_spec(s) for s in sys.argv[1:]]', *specs)
+
+
+def check_volume(volume):
+    if not isinstance(volume, str) or not re.fullmatch(VOLUME_PATTERN, volume):
+        raise ValueError('invalid harness volume selection')
 
 
 def public_entry(name, release, package):

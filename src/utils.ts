@@ -403,7 +403,7 @@ export async function resolveOwnedProjects(
 /**
  * Value of a `KEY=value` line's right-hand side as parseEnvFile reads it: trimmed, a quoted value loses its
  * quotes and an optional ` # comment`, an unquoted value loses its ` # comment` (a `#` without preceding whitespace stays).
- * Same rule as the os-runner parser.
+ * Same rule as the carapa-runner parser.
  */
 export function unquoteEnvValue(raw: string): string {
     const val = raw.trim();

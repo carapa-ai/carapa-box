@@ -37,7 +37,11 @@ export function toHostPath(containerPath: string): string {
     // so using it as fallback makes the replace a no-op.
     const stacksDir = getStacksDir();
     if (containerPath.startsWith(stacksDir)) {
-        const stacksHostDir = process.env.SANDBOX_STACKS_HOST_DIR || stacksDir;
+        // The Compose default (`./stacks` when SANDBOX_STACKS_DIR and
+        // CARAPA_BOX_SOURCE_DIR are unset) is relative to the checkout on the
+        // host; the Docker daemon needs it absolute (e.g. for volume devices).
+        const configured = process.env.SANDBOX_STACKS_HOST_DIR;
+        const stacksHostDir = configured ? path.resolve(hostDir, configured) : stacksDir;
         return containerPath.replace(stacksDir, stacksHostDir);
     }
 
@@ -412,7 +416,7 @@ export async function startStack(stackDir: string, projectName?: string, env?: R
 
     if (needsIsolation) {
         if (networkFeatures.usesStableAgentIp) {
-            const reservation = (await reserveInstanceNetwork(projectName, true, undefined, await stackAgentService(stackDir)))!;
+            const reservation = await reserveInstanceNetwork(projectName, undefined, await stackAgentService(stackDir));
             instanceNetwork = reservation.network;
             env = { ...env, AGENT_IPV4_ADDRESS: reservation.agentIp };
         } else {
@@ -552,18 +556,12 @@ function escapeRegExp(s: string): string {
 export async function stopStack(stackDir: string, projectName?: string, onLog?: (msg: string) => void): Promise<ComposeResult> {
     if (projectName && ingressEnabled()) {
         await setIngressProjectActive(projectName, false);
-        // Detach first: an expired route cannot survive a stop, and a retained
-        // ingress endpoint must not prevent legacy subnet migration below.
+        // Detach first: an expired route cannot survive a stop.
         const inspect = await execDocker(['inspect', INGRESS_CONTAINER]);
         if (inspect.status === 0 && JSON.parse(inspect.stdout)[0]?.NetworkSettings?.Networks?.[`agent_egress_${projectName}`]) {
             const disconnected = await execDocker(['network', 'disconnect', '--force', `agent_egress_${projectName}`, INGRESS_CONTAINER]);
             if (disconnected.status !== 0) throw new Error(disconnected.stderr || 'Could not revoke sandbox ingress');
         }
-    }
-    // Capture the current legacy address BEFORE down destroys the endpoint.
-    const networkFeatures = projectName ? await stackNetworkFeatures(stackDir) : undefined;
-    if (projectName && networkFeatures?.usesAgentNetwork && networkFeatures.usesStableAgentIp) {
-        await reserveInstanceNetwork(projectName, false, undefined, await stackAgentService(stackDir));
     }
     // Let each service's stop_grace_period (in docker-compose.yml) control its own shutdown timeout.
     // Default is 10s if not specified; stacks that need longer (e.g. carapa-brain) should set it in their compose file.
@@ -614,7 +612,7 @@ export async function stopStack(stackDir: string, projectName?: string, onLog?: 
     // Clean up per-instance network (no-op if it doesn't exist)
     if (projectName) {
         try {
-            await unregisterNginxProxyRoute(projectName, undefined, stackDir);
+            await unregisterNginxProxyRoute(projectName);
         } catch (err) {
             logger.warn({ projectName, err }, "Could not remove nginx proxy route");
             onLog?.(`Warning: could not remove nginx proxy route: ${String(err)}\n`);

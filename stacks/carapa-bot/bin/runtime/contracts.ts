@@ -1,5 +1,5 @@
 import { hostEnvValue, hostPath, hostPathsInText } from './roots';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import { discardedSessionIds, discardMarker, readText, safeSessionKey } from './sessions';
@@ -45,7 +45,6 @@ export interface NativeHarnessPlan {
   /** CLI supports history resume, but has no persistent stdio session adapter. */
   persistentResume?: boolean;
   sidecars?: NativeSidecarPlan[];
-  afterExit?(context: RunContext, exitCode: number): Promise<void> | void;
 }
 
 export interface NativeSidecarPlan {
@@ -100,7 +99,7 @@ export function loadAgentArgs(runDir: string): AgentArgs {
   if (key && raw.persistent === '1') {
     const marker = discardMarker(runDir, key);
     // The marker rejects only the discarded IDs; a later session for this key resumes normally.
-    if (existsSync(marker) && (discardedSessionIds(marker)?.includes(sessionId) ?? true)) sessionId = '';
+    if (discardedSessionIds(marker).includes(sessionId)) sessionId = '';
     sessionId ||= readText(join(dirname(dirname(runDir)), 'sessions', safeSessionKey(key), 'session_id'));
   }
   return {

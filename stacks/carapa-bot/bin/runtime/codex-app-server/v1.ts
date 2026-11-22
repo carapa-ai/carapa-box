@@ -46,6 +46,16 @@ function failureMessage(value: unknown, fallback: string): string {
   return string(object.message, fallback);
 }
 
+/** Provider extras of an app-server error object; undefined when it carries neither. */
+function failureDetails(value: unknown): JsonRecord | undefined {
+  const object = record(value);
+  const details: JsonRecord = {
+    ...(object.additionalDetails === undefined ? {} : { additionalDetails: object.additionalDetails }),
+    ...(object.codexErrorInfo === undefined ? {} : { codexErrorInfo: object.codexErrorInfo }),
+  };
+  return Object.keys(details).length ? details : undefined;
+}
+
 function interactionId(message: RpcMessage): string {
   const params = record(message.params);
   return String(
@@ -62,6 +72,7 @@ export class CodexRunV1Adapter {
   private lastStatus: RunV1TerminalStatus = "completed";
   private lastStopReason = "end_turn";
   private lastError = "";
+  private lastErrorDetails: JsonRecord | undefined;
 
   constructor(
     private readonly writer: RunV1Writer,
@@ -152,6 +163,7 @@ export class CodexRunV1Adapter {
     this.lastStatus = "failed";
     this.lastStopReason = "runtime_error";
     this.lastError = message;
+    this.lastErrorDetails = undefined;
     this.writer.append({ type: "error", message, fatal: true });
   }
 
@@ -183,7 +195,7 @@ export class CodexRunV1Adapter {
     this.writer.finish(this.lastStatus, {
       stopReason: this.lastStopReason,
       ...(this.lastStatus === "failed" && this.lastError
-        ? { error: { message: this.lastError } }
+        ? { error: { message: this.lastError, ...(this.lastErrorDetails ? { details: this.lastErrorDetails } : {}) } }
         : {}),
     });
   }
@@ -352,12 +364,15 @@ export class CodexRunV1Adapter {
 
   private usage(params: JsonRecord): void {
     const usage = record(record(params.tokenUsage).last);
+    const cachedInputTokens = Number(usage.cachedInputTokens) || 0;
     this.writer.append({
       type: "usage",
       scope: "incremental",
-      inputTokens: Number(usage.inputTokens) || 0,
+      // Codex counts cached tokens inside inputTokens; V1 reports them apart,
+      // as the other adapters do, so consumers can add both without doubling.
+      inputTokens: Math.max(0, (Number(usage.inputTokens) || 0) - cachedInputTokens),
       outputTokens: Number(usage.outputTokens) || 0,
-      cachedInputTokens: Number(usage.cachedInputTokens) || 0,
+      cachedInputTokens,
       cacheWriteInputTokens: Number(usage.cacheWriteInputTokens) || 0,
       reasoningOutputTokens: Number(usage.reasoningOutputTokens) || 0,
     });
@@ -424,11 +439,13 @@ export class CodexRunV1Adapter {
     const error = params.error ?? message.error ?? params.message;
     const text = failureMessage(error, "Codex error");
     const fatal = params.willRetry === false;
-    this.writer.append({ type: "error", message: text, fatal });
+    const details = failureDetails(error);
+    this.writer.append({ type: "error", message: text, fatal, ...(details ? { details } : {}) });
     if (fatal) {
       this.lastStatus = "failed";
       this.lastStopReason = "provider_error";
       this.lastError = text;
+      this.lastErrorDetails = details;
     }
   }
 
@@ -437,6 +454,10 @@ export class CodexRunV1Adapter {
     this.lastStatus = terminalStatus(turn.status);
     this.lastStopReason = string(turn.status, "end_turn");
     this.lastError = failureMessage(turn.error, "Codex turn failed");
-    if (this.lastStatus !== "failed") this.lastError = "";
+    this.lastErrorDetails = failureDetails(turn.error);
+    if (this.lastStatus !== "failed") {
+      this.lastError = "";
+      this.lastErrorDetails = undefined;
+    }
   }
 }

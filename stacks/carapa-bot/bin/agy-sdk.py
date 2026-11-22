@@ -275,7 +275,7 @@ async def main_async(args) -> int:
     except Exception as e:
         # Startup failure (most commonly a missing/invalid GEMINI_API_KEY, which
         # the SDK rejects fast). Surface it as a structured error result instead
-        # of an empty output.jsonl + opaque traceback.
+        # of an empty result + opaque traceback.
         emit({
             "type": "result",
             "result": f"agy-sdk startup failed: {type(e).__name__}: {e}",

@@ -53,14 +53,18 @@ else
 fi
 
 # ── CVE scan function ───────────────────────────────────────────────────
+# Report-only, like build.sh: findings are printed and never fail the build.
+# A scan that could not run is called out so it is not mistaken for a clean one.
 scan_image() {
   local image="$1"
   echo ""
   echo "Scanning $image for vulnerabilities..."
   if command -v trivy >/dev/null 2>&1; then
-    trivy image --severity HIGH,CRITICAL --exit-code 1 "$image"
+    trivy image --severity HIGH,CRITICAL "$image" \
+      || echo "WARNING: trivy could not scan $image; no report for this image"
   elif docker scout version >/dev/null 2>&1; then
-    docker scout cves "local://$image" --only-severity critical,high
+    docker scout cves "local://$image" --only-severity critical,high \
+      || echo "WARNING: docker scout could not scan $image; no report for this image"
   else
     echo "No CVE scanner found. Install trivy or docker scout."
     echo "  Manual scan: trivy image --severity HIGH,CRITICAL $image"

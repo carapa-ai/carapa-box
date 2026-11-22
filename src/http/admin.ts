@@ -22,7 +22,7 @@ function jsonResponse(value: unknown, init: ResponseInit = {}): Response {
     return new Response(JSON.stringify(value), { ...init, headers });
 }
 
-export interface InstanceRow {
+interface InstanceRow {
     /** Compose project name (e.g. "carapa-board-user1"). */
     project: string;
     /** Stack name the project runs from (e.g. "carapa-board"). */

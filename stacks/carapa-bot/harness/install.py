@@ -15,9 +15,7 @@ PYTHON = str(ROOT / 'python/bin/python3') if (ROOT / 'python/bin/python3').exist
 PACKAGES = {
     'codex': '@openai/codex', 'claude': '@anthropic-ai/claude-code',
     'pi': '@earendil-works/pi-coding-agent', 'omp': '@oh-my-pi/pi-coding-agent',
-    # Yarn is retained as a legacy volume/tooling entry, but is not an agent
-    # harness and is therefore omitted from the operator TUI.
-    'playwright': '@playwright/cli', 'yarn': 'yarn',
+    'playwright': '@playwright/cli',
     # xAI Grok Build; glibc-only native binary, ACP via `grok agent stdio`.
     'grok': '@xai-official/grok',
 }

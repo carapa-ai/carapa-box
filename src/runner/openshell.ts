@@ -25,7 +25,7 @@ import type { CommandWrapper } from "./os-sandbox.js";
 import { checkoutRoot, projectTmpRoot, shellDir, type NativeProject } from "./projects.js";
 import { VmAssets, spawnExec, type VmImage } from "./vm-assets.js";
 
-export interface SandboxMount {
+interface SandboxMount {
     type: "bind" | "volume";
     source: string;
     target: string;
@@ -44,7 +44,7 @@ export interface SandboxSpec {
     hash: string;
 }
 
-export interface ExecResult { code: number; out: string }
+interface ExecResult { code: number; out: string }
 /** Runs the openshell CLI (injected by tests). */
 export type CliExec = (argv: string[], options?: { timeoutMs?: number }) => Promise<ExecResult>;
 

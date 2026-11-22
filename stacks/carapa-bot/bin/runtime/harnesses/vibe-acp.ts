@@ -98,7 +98,6 @@ export const vibeAcpContract: AcpHarnessContract = {
   id: 'vibe-acp',
   restore: 'load',
   restoreFailure: 'new-session',
-  reportModel: true,
   // Vibe 3.1.0: a run_typescript `tools.process.start('<command>')` call makes
   // its Python layer reject the Core's own transition, and the in-memory Core
   // then refuses every later prompt (state='running'). A new process reloads

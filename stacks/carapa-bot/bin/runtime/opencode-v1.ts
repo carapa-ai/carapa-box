@@ -93,6 +93,7 @@ export class OpenCodeRunV1Adapter {
   private sessionId = '';
   private effectiveModel = '';
   private terminalStep = false;
+  private lastError = '';
 
   constructor(
     private readonly writer: RunV1Writer,
@@ -160,15 +161,18 @@ export class OpenCodeRunV1Adapter {
         } else if (reason && reason !== 'tool-calls' && reason !== 'continue') {
           this.status = 'failed';
           this.stopReason = reason;
-          this.writer.append({ type: 'error', message: string(record(event.error).message, `OpenCode stopped with reason: ${reason}`), fatal: false });
+          this.fail(string(record(event.error).message, `OpenCode stopped with reason: ${reason}`));
         }
         return;
       }
-      case 'error':
+      case 'error': {
         this.status = 'failed';
         this.stopReason = 'runtime_error';
-        this.writer.append({ type: 'error', message: string(event.message, 'OpenCode runtime error'), fatal: false });
+        // `run --format json` nests the text as error: { name, data: { message } }.
+        const error = record(event.error);
+        this.fail(string(event.message, record(error.data).message, error.message, error.name, 'OpenCode runtime error'));
         return;
+      }
       default:
         return;
     }
@@ -180,7 +184,10 @@ export class OpenCodeRunV1Adapter {
     if (this.messageText) this.writer.append({ type: 'message', id: this.messageId, role: 'assistant', content: this.messageText, format: 'markdown', status: exitCode === 0 ? 'completed' : 'interrupted' });
     for (const [id, name] of this.tools) this.writer.append({ type: 'tool_call', id, status: 'failed', name, category: category(name), error: { message: 'OpenCode run ended before the tool completed' } });
     if (exitCode !== 0) this.status = 'failed';
-    this.writer.finish(this.status, { stopReason: exitCode === 0 ? this.stopReason : 'process_exit' });
+    this.writer.finish(this.status, {
+      stopReason: exitCode === 0 ? this.stopReason : 'process_exit',
+      ...(this.status === 'failed' && this.lastError ? { error: { message: this.lastError } } : {}),
+    });
     this.terminal = true;
   }
 
@@ -197,6 +204,11 @@ export class OpenCodeRunV1Adapter {
   hasTerminalStep(): boolean { return this.terminalStep; }
 
   setModel(value: string): void { this.model(value); }
+
+  private fail(message: string): void {
+    this.lastError = message;
+    this.writer.append({ type: 'error', message, fatal: false });
+  }
 
   private start(): void {
     if (this.started) return;
@@ -254,7 +266,6 @@ export async function runOpenCodeNative(context: RunContext, command: string[]):
             }
           }, 100);
         }
-        process.stdout.write(`${line}\n`);
         newline = pending.indexOf(10);
       }
     });
@@ -267,13 +278,13 @@ export async function runOpenCodeNative(context: RunContext, command: string[]):
     await terminalCleanup;
     if (pending.length) {
       appendFileSync(rawPath, pending);
-      process.stdout.write(pending);
       adapter.consume({ type: 'error', message: 'OpenCode output ended with an incomplete JSONL event' });
     }
     return exitCode;
   };
-  let exitCode = await run(command);
+  let exitCode = 1;
   try {
+    exitCode = await run(command);
     while (exitCode === 0 && adapter.canContinue() && writer.toolCallRecovery.needed() && !existsSync(join(context.runDir, 'turn_interrupt'))) {
       const session = adapter.getSessionId();
       if (!session) throw new Error('Cannot correct tool-call text: OpenCode returned no session to resume.');

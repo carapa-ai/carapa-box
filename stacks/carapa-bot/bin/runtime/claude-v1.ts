@@ -26,6 +26,15 @@ function textBlocks(content: unknown, type: string): string {
   }).filter(Boolean).join('');
 }
 
+const FAILURE_TEXT_LIMIT = 4000;
+
+/** Provider reason of a failed result frame: its errors, else the result text, else the subtype. */
+function resultFailureText(event: JsonRecord): string {
+  const errors = Array.isArray(event.errors) ? event.errors.filter((item): item is string => typeof item === 'string' && item.length > 0) : [];
+  const text = errors.length ? errors.join('; ') : event.is_error === true ? string(event.result) : '';
+  return (text || `Claude result ${string(event.subtype, 'error')}`).slice(0, FAILURE_TEXT_LIMIT);
+}
+
 export class ClaudeRunV1Adapter {
   private readonly tools = new Map<string, string>();
   private readonly interactions = new Set<string>();
@@ -36,6 +45,7 @@ export class ClaudeRunV1Adapter {
   private usageFinalized = false;
   private readonly previousUsage: JsonRecord = {};
   private messageSequence = 0;
+  private readonly seenResults = new Set<string>();
   private started = false;
   private terminal = false;
   private status: 'completed' | 'interrupted' | 'failed' = 'completed';
@@ -52,7 +62,8 @@ export class ClaudeRunV1Adapter {
   ) { }
 
   consume(event: JsonRecord): void {
-    if (this.terminal) return;
+    // Sub-agent events belong to the parent's raw journal only.
+    if (this.terminal || event.parent_tool_use_id) return;
     if (event.type === 'system' && event.subtype === 'init') {
       this.start(string(event.session_id, 'claude-session'));
       return;
@@ -167,10 +178,17 @@ export class ClaudeRunV1Adapter {
       return;
     }
     if (event.type === 'result') {
+      // A replayed result must not add its usage to the run a second time.
+      const uuid = string(event.uuid);
+      if (uuid && this.seenResults.has(uuid)) return;
+      if (uuid) this.seenResults.add(uuid);
       this.start(string(event.session_id, this.sessionId || 'claude-session'));
       this.sessionId = string(event.session_id, this.sessionId);
       this.stopReason = string(event.stop_reason, this.stopReason);
-      if (event.is_error === true || string(event.subtype).startsWith('error')) this.status = 'failed';
+      if (event.is_error === true || string(event.subtype).startsWith('error')) {
+        this.status = 'failed';
+        this.failureText = resultFailureText(event);
+      } else this.failureText = '';
       this.finalizeUsage(record(event.usage));
     }
   }
@@ -189,6 +207,9 @@ export class ClaudeRunV1Adapter {
     this.usageFinalized = false;
   }
 
+  /** Provider text of the latest failed result frame; a later successful result clears it. */
+  private failureText = '';
+
   get failed(): boolean { return this.status === 'failed'; }
 
   finish(exitCode: number, interrupted = false, error?: string): void {
@@ -199,9 +220,10 @@ export class ClaudeRunV1Adapter {
     for (const id of this.interactions) this.writer.append({ type: 'interaction', id, status: 'cancelled' });
     if (exitCode !== 0) this.status = 'failed';
     if (interrupted) this.status = 'interrupted';
+    const message = error || (this.status === 'failed' ? this.failureText : '');
     this.writer.finish(this.status, {
       stopReason: interrupted ? 'interrupted' : error ? 'runtime_error' : exitCode === 0 ? this.stopReason : 'process_exit',
-      ...(error ? { error: { message: error } } : {}),
+      ...(message ? { error: { message } } : {}),
     });
     this.terminal = true;
   }

@@ -74,7 +74,6 @@ export const museAcpContract: AcpHarnessContract = {
   id: 'muse-acp',
   restore: 'load',
   restoreFailure: 'new-session',
-  reportModel: true,
   prepare(context) {
     // META_API_KEY outranks the login and would bypass the relay.
     delete context.env.META_API_KEY;

@@ -20,7 +20,8 @@ const lifecycle = (uuid: string, state: string) => send({ type: 'command_lifecyc
 const reply = (prompt: string) => send({ type: 'assistant', session_id: session, message: { id: `message-${++turns}`, content: [{ type: 'text', text: `turn ${turns}: ${prompt}` }] } });
 const result = (failed = false) => {
   active = false;
-  send({ type: 'result', subtype: failed ? 'error_during_execution' : 'success', is_error: failed, session_id: session, result: 'done', usage: { input_tokens: 1, output_tokens: 1 },
+  send({ type: 'result', subtype: failed ? 'error_during_execution' : 'success', is_error: failed, session_id: session, result: 'done',
+    ...(failed ? { errors: [`No conversation found with session ID: ${session}`] } : {}), usage: { input_tokens: 1, output_tokens: 1 },
     total_cost_usd: turns * 0.01, modelUsage: { fixture: { inputTokens: turns, outputTokens: turns } } });
   if (command) lifecycle(command, 'completed');
   command = '';
@@ -98,7 +99,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (turns === 0) send({ type: 'system', subtype: 'init', session_id: session, ...(process.env.TEST_CLAUDE_SLASH_COMMANDS ? { slash_commands: JSON.parse(process.env.TEST_CLAUDE_SLASH_COMMANDS) } : {}) });
   reply(prompt);
   if (prompt === 'slow') { setTimeout(() => result(), 300); return; }
-  if (prompt === 'crash') { setTimeout(() => process.exit(7), 50); return; }
+  if (prompt === 'crash') { process.stderr.write(`No conversation found with session ID: ${session}\n`); setTimeout(() => process.exit(7), 50); return; }
   if (prompt === 'hold') return;
   if (prompt === 'plan') { requestPermission(0); return; }
   if (prompt === 'hidden-turn') {

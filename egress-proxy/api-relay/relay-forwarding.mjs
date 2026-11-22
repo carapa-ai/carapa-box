@@ -21,7 +21,7 @@ export const FORWARD_HEADERS = Object.freeze({
   credentials: 'x-carapa-client-credentials',
 });
 
-export const MAX_CLOCK_SKEW_MS = 60_000;
+const MAX_CLOCK_SKEW_MS = 60_000;
 
 /** Per-request identity of a verified forwarded request (central relay). */
 export const forwardContext = new AsyncLocalStorage();
@@ -35,16 +35,16 @@ function canonical({ method, path, timestamp, nonce, box, sandbox, credentials }
   return [String(method).toUpperCase(), path, String(timestamp), nonce, box, sandbox, credentialDigest].join('\n');
 }
 
-export function forwardSignature(keyHex, fields) {
+function forwardSignature(keyHex, fields) {
   return crypto.createHmac('sha256', Buffer.from(keyHex, 'hex')).update(canonical(fields)).digest('hex');
 }
 
-export function encodeCredentials(map) {
+function encodeCredentials(map) {
   const entries = Object.entries(map || {}).filter(([, value]) => typeof value === 'string' && value);
   return entries.length ? Buffer.from(JSON.stringify(Object.fromEntries(entries))).toString('base64url') : '';
 }
 
-export function decodeCredentials(value) {
+function decodeCredentials(value) {
   if (!value) return {};
   try {
     const parsed = JSON.parse(Buffer.from(String(value), 'base64url').toString('utf8'));

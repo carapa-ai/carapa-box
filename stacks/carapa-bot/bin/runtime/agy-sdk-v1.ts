@@ -160,7 +160,6 @@ export async function runAgySdkNative(context: RunContext, command: string[]): P
     for (const line of lines) {
       if (!line.trim()) continue;
       appendFileSync(rawPath, `${line}\n`);
-      process.stdout.write(`${line}\n`);
       try { consume(JSON.parse(line) as SdkEvent); } catch (error) { failure = String(error); child.stdin.end(); }
     }
   };
@@ -171,7 +170,6 @@ export async function runAgySdkNative(context: RunContext, command: string[]): P
   });
   if (buffer.trim()) {
     appendFileSync(rawPath, buffer);
-    process.stdout.write(buffer);
     try { consume(JSON.parse(buffer) as SdkEvent); } catch (error) { failure = String(error); }
   }
   if (failure || !sawResult || !adapter.canContinue()) exitCode = 1;

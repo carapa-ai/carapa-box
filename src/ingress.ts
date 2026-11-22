@@ -162,10 +162,10 @@ async function flag(file: string, name: string): Promise<boolean> {
     catch (error: any) { if (error.code === 'ENOENT') return false; throw error; }
 }
 
-/** Starting a daemon cannot make a legacy Compose project routable. */
-export async function requireIngressMigration(project: string, deps = defaults()) {
+/** SSH and app publication need a sandbox that was started with ingress. */
+export async function requireIngressSandbox(project: string, deps = defaults()) {
     if (!isValidIngressIdentifier(project)) throw new Error('Invalid ingress project');
-    const message = `Sandbox ${project} has not been migrated to ingress. Restart the sandbox through CarapaBoard or CarapaBox to apply ingress networking, then enable SSH again. Restarting interrupts active sandbox work.`;
+    const message = `Sandbox ${project} was not started with ingress. Start the sandbox through CarapaBoard or CarapaBox with ingress enabled before enabling SSH or app publishing. Restarting interrupts active sandbox work.`;
     if (!await flag(path.join(deps.directory, 'projects', `${project}.json`), 'active')) throw new Error(message);
     try {
         await fs.access(path.join(deps.directory, 'compose', `${project}.json`));

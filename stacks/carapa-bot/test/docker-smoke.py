@@ -104,7 +104,7 @@ def main():
             volumes = {json.loads(file.read_text())['volume']
                        for file in store.state.glob('generations/*/selection.json')}
             for volume in volumes:
-                store.managed(volume)
+                harness.check_volume(volume)
                 subprocess.run(['docker', 'volume', 'rm', volume], check=True)
 
 

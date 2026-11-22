@@ -61,6 +61,8 @@ loading, daemon starts/restarts, and Docker-group access remain distinct steps.
 - **Host development mode:** follow [references/host-install.md](references/host-install.md).
 - Read [references/security-and-relay.md](references/security-and-relay.md) before
   changing credentials, approved mount roots, network access, or relay clients.
+- To remove an installation, see the Uninstall section of
+  [references/container-install.md](references/container-install.md).
 - For ingress HTTP/SSH exposure or egress proxy operations, follow
   [references/proxies.md](references/proxies.md), including migration and recovery.
 
@@ -73,8 +75,9 @@ are not implicit installation steps.
 
 Do not disable AppArmor, seccomp, policy checks, or authentication to make setup
 pass. Stop at the specific unsupported host prerequisite while completing
-unaffected preparation. Keep host-nginx, Git/SSH, gVisor, and provider setup scoped
-to the user's selected capabilities.
+unaffected preparation. Keep host-nginx, Git/SSH, and provider setup scoped
+to the user's selected capabilities. Agent stacks that set `runtime: runsc`
+(the bundled `carapa-bot` does) require gVisor; see container-install.md.
 
 ## 4. Verify the boundary
 
@@ -100,7 +103,29 @@ and image first; launch a disposable instance only if that smoke test is within
 the user's scope. Do not claim agent, provider, or egress isolation coverage from
 the controller HTTP check alone.
 
-## 5. Report and hand off
+## 5. Choose the box's role
+
+After the boundary checks pass, ask the user (one `AskUserQuestion`) what this
+Box is for. Skip the question only when they already said so.
+
+- **Install CarapaBoard on this machine** (a standalone installation, or this
+  machine becomes the hub). Continue with CarapaBoard's setup skill. It reuses
+  this Box, connects provider accounts locally, and sets up the agents.
+- **Join an existing CarapaBoard hub** (hub mode). Follow `docs/multi-host.md`,
+  *Linux box*:
+  1. The user registers this box on the hub's Board (admin menu → *CarapaBox hosts* → *Register*) and writes the one-time connection secret to `SECRETS_DIR/carapa_hub_box_secret` (mode 0600). Never ask for it in chat. Never put it in a `.env`, and never print `.env` lines or backups that may contain it.
+  2. Set `CARAPA_HUB_URL` and `CARAPA_BOX_ID` in Box's `.env`, and `RELAY_MODE=forward`, `CARAPA_RELAY_UPSTREAM` and `CARAPA_BOX_ID` in `egress-proxy/.env`.
+  3. Mount the secret file through a hub override in each project. The egress override must be `egress-proxy/docker-compose.override.hub.yml`, listed in `COMPOSE_FILE` by bare name, because the controller recreates egress services from inside its container. Add `extra_hosts` when Docker cannot resolve the hub name.
+  4. If the hub uses a private CA, add the CA overlay instead of disabling verification.
+  5. Only if the user runs local model engines on another host, such as the hub, set `llama-proxy`'s `UPSTREAM_HOST` to that host in the egress override. Ask rather than assume engines, hosts or ports exist.
+  6. Add the IPC, group, repository and agent-home roots to the mount allowlist.
+  7. Prepare the box's agent stacks, which the hub does not do: gVisor (`runtime: runsc`), the stack `.env`, the image, the harness selection, and the Codex relay provider in the agent home.
+  8. Recreate Box and the egress services. Verify that Box logs `[hub] Connected` and that the box shows as online in the hub's Board. Also verify that no automatic egress recreation fails, and that a cheap model call through the relay gets a reply.
+
+  `docs/multi-host.md` (*Linux box*) has the overrides, the error signatures and secret rotation. In hub mode the relay holds no provider credentials. Accounts are connected on the hub's Board, and skip the local provider-account setup. A route works only if the hub holds its credential.
+- **Neither yet.** Leave Box standalone and report how to choose later.
+
+## 6. Report and hand off
 
 Report the selected mode, controller URL, configuration/secret file locations
 (without values), enabled optional features, checks actually run, and remaining

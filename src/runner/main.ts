@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 /**
- * os-runner: a Docker-less CarapaBox for machines without containers
+ * carapa-runner: a Docker-less CarapaBox for machines without containers
  * (e.g. a Mac). It dials the CarapaBoard hub like a Linux box (kind
  * "native"), runs the shared agent runtime natively under Claude Code's
  * sandbox (Seatbelt), and sends model/Board traffic through a local signed
  * relay forwarder to the hub. No provider credential is stored here.
  *
- *   bun run src/os-runner/main.ts        (config: ~/.os-runner/config.json)
+ *   bun run src/runner/main.ts        (config: ~/.carapa-runner/config.json)
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -119,8 +119,8 @@ async function main(): Promise<void> {
     };
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
-    console.log(`[os-runner] ${config.boxId}: root ${config.root}, relay forwarder 127.0.0.1:${config.relayPort}`);
-    if (llamaRoute) console.log(`[os-runner] llama-proxy ports ${config.llamaPorts.join(", ")} → ${config.llamaUpstreamHost}`);
+    console.log(`[carapa-runner] ${config.boxId}: root ${config.root}, relay forwarder 127.0.0.1:${config.relayPort}`);
+    if (llamaRoute) console.log(`[carapa-runner] llama-proxy ports ${config.llamaPorts.join(", ")} → ${config.llamaUpstreamHost}`);
 }
 
 /** Same URL rules as a Linux box (wss:// for remote hubs). */
@@ -138,7 +138,7 @@ function hubConnectUrl(raw: string): string {
 
 if (import.meta.main) {
     main().catch((error) => {
-        console.error(`[os-runner] ${errorText(error)}`);
+        console.error(`[carapa-runner] ${errorText(error)}`);
         process.exit(1);
     });
 }

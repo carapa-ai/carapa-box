@@ -96,8 +96,7 @@ Retain other projects' generated files and all reservations.
 Follow [container installation](container-install.md) for bind sources, service
 UIDs, build scripts and optional secret placeholders; follow
 [security and relay](security-and-relay.md) for provider onboarding. Inspect
-actual client configs: older egress README examples describe obsolete agent
-`sandbox-relay` access. Do not add a controller route to an agent client.
+actual client configs. Do not add a controller route to an agent client.
 
 Use the egress directory's own `.env` and Compose overrides. Its project name is
 `egress-proxy`; inspect and target its `squid`, `api-relay`, or `llama-proxy` service,

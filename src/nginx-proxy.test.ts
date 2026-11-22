@@ -181,44 +181,23 @@ describe('concurrent route registration', () => {
         });
     });
 
-    describe('legacy route file of a renamed project label', () => {
-        const project = 'my_stack-dev';
-        const legacyName = 'my-stack-dev.carapa.conf';
-        async function withLegacy(
-            legacyHostname: ((stack: string) => string) | string,
-            fn: (root: string, stack: string, reload: () => Promise<void>) => Promise<void>,
-        ) {
-            await withRoutes(async (root, _reloads, reload) => {
-                const stack = await fs.mkdtemp(path.join(os.tmpdir(), 'box-stack-'));
-                try {
-                    await fs.writeFile(path.join(stack, 'nginx-proxy-routes.json'), JSON.stringify({ routes: [{ label: 'api', service: 'web', targetPort: 80 }] }));
-                    const hostname = typeof legacyHostname === 'string' ? legacyHostname : legacyHostname(stack);
-                    await fs.writeFile(path.join(root, legacyName), renderRoute([hostname], 9001) + renderRoute(['api.ex.test'], 9002));
-                    await fs.writeFile(path.join(root, 'my-stack-dev.aliases.json'), '[]');
-                    await fn(root, stack, reload);
-                } finally { await fs.rm(stack, { recursive: true, force: true }); }
-            });
-        }
-
-        test('register removes the project\'s legacy files and keeps its extra routes; unregister leaves nothing', async () => {
-            await withLegacy(stack => defaultNginxProxyHostnames(stack, project, ['ex.test'])[0]!, async (root, stack, reload) => {
-                await registerNginxProxyRoute(stack, project, compose, undefined, reload);
-                const files = await fs.readdir(root);
-                expect(files).toHaveLength(1);
-                expect(files[0]).toMatch(/^my-stack-dev-[0-9a-f]{8}\.carapa\.conf$/);
-                expect(await fs.readFile(path.join(root, files[0]!), 'utf8')).toContain('api.ex.test');
-
-                // A legacy-named file whose server_name is another project's is never touched.
-                await fs.writeFile(path.join(root, legacyName), renderRoute(['other.ex.test'], 9001));
-                await registerNginxProxyRoute(stack, project, compose, undefined, reload);
-                await unregisterNginxProxyRoute(project, reload, stack);
-                expect(await fs.readdir(root)).toEqual([legacyName]);
-
-                await fs.writeFile(path.join(root, legacyName), renderRoute([defaultNginxProxyHostnames(stack, project, ['ex.test'])[0]!], 9001));
-                await registerNginxProxyRoute(stack, project, compose, undefined, reload);
-                await unregisterNginxProxyRoute(project, reload, stack);
+    test('with ingress enabled, a project without an ingress model gets no published-port route', async () => {
+        await withRoutes(async (root, reloads, reload) => {
+            const stack = await fs.mkdtemp(path.join(os.tmpdir(), 'box-stack-'));
+            const ingressDir = await fs.mkdtemp(path.join(os.tmpdir(), 'box-ingress-'));
+            const old = { a: process.env.ENABLE_INGRESS_PROXY, b: process.env.INGRESS_STATE_DIR };
+            process.env.ENABLE_INGRESS_PROXY = 'true';
+            process.env.INGRESS_STATE_DIR = ingressDir;
+            try {
+                expect(await registerNginxProxyRoute(stack, 'demo', compose, undefined, reload)).toBeUndefined();
                 expect(await fs.readdir(root)).toEqual([]);
-            });
+                expect(reloads.n).toBe(0);
+            } finally {
+                if (old.a === undefined) delete process.env.ENABLE_INGRESS_PROXY; else process.env.ENABLE_INGRESS_PROXY = old.a;
+                if (old.b === undefined) delete process.env.INGRESS_STATE_DIR; else process.env.INGRESS_STATE_DIR = old.b;
+                await fs.rm(stack, { recursive: true, force: true });
+                await fs.rm(ingressDir, { recursive: true, force: true });
+            }
         });
     });
 

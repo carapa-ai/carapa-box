@@ -127,8 +127,9 @@ running alongside them.
    static address (for example `172.29.255.3`), add only that `/32` to
    `INGRESS_HTTP_ALLOW_CIDRS`, and set `NGINX_PROXY_INGRESS_HOST=172.29.255.2`
    to match `INGRESS_EDGE_IP`. Persist the attachment in nginx's own Compose
-   configuration. This setting applies only to migrated ingress routes; legacy
-   published routes continue using `host.docker.internal`. Never attach sandbox
+   configuration. This setting applies to ingress routes. A sandbox without
+   an ingress Compose model gets no route while ingress is enabled; with ingress
+   disabled, routes use published ports on `host.docker.internal`. Never attach sandbox
    services to the edge network. Recreate the controller after environment
    changes. The controller regenerates nginx routes in the background on startup
    and every 60 seconds; sandbox starts and alias changes update them immediately.

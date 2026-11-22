@@ -55,6 +55,9 @@ function managedContext(root: string, agentCmd: string): RunContext {
   };
 }
 
+const v1Events = (runDir: string) =>
+  readFileSync(join(runDir, 'output.v1.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+
 describe('managed ACP protocol translation', () => {
   test('recognizes provider failures delivered as ordinary message chunks', () => {
     expect(
@@ -70,70 +73,18 @@ describe('managed ACP protocol translation', () => {
     expect(isProviderFailureText('The provider returned 503 earlier; the retry succeeded.')).toBe(false);
   });
 
-  test('preserves thought, text, and tool ordering while recording the terminal failure', () => {
-    const root = mkdtempSync(join(tmpdir(), 'carapa-acp-'));
-    roots.push(root);
-    const output = join(root, 'output.jsonl');
-    writeFileSync(output, '');
-    const state: TranslationState = {
-      thought: '',
-      tools: new Map(),
-      visibleText: [],
-    };
+  test('counts visible output once per tool and records a streamed provider failure', () => {
+    const state: TranslationState = { completedTools: new Set(), visibleText: [] };
     const update = (value: Record<string, unknown>) =>
-      translateAcpMessage({ method: 'session/update', params: { update: value } }, state, output);
+      translateAcpMessage({ method: 'session/update', params: { update: value } }, state);
 
-    update({
-      sessionUpdate: 'agent_thought_chunk',
-      content: { text: 'checking' },
-    });
-    update({
-      sessionUpdate: 'tool_call',
-      toolCallId: 'tool-1',
-      rawInput: { command: 'rg error' },
-    });
-    update({
-      sessionUpdate: 'tool_call_update',
-      toolCallId: 'tool-1',
-      status: 'in_progress',
-      rawOutput: 'partial output must not complete the tool',
-    });
-    update({
-      sessionUpdate: 'tool_call_update',
-      toolCallId: 'tool-1',
-      status: 'failed',
-      rawOutput: { output: 'failed output' },
-    });
-    update({
-      sessionUpdate: 'agent_message_chunk',
-      content: { text: 'invalid_encrypted_content from provider' },
-    });
-
-    expect(
-      readFileSync(output, 'utf8')
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line)),
-    ).toEqual([
-      { type: 'item.completed', item: { type: 'reasoning', text: 'checking' } },
-      {
-        type: 'item.started',
-        item: { type: 'command_execution', command: 'rg error' },
-      },
-      {
-        type: 'item.completed',
-        item: {
-          type: 'command_execution',
-          command: 'rg error',
-          exit_code: 1,
-          aggregated_output: 'failed output',
-        },
-      },
-      {
-        type: 'text',
-        part: { type: 'text', text: 'invalid_encrypted_content from provider' },
-      },
-    ]);
+    expect(update({ sessionUpdate: 'agent_thought_chunk', content: { text: 'checking' } })).toBe(false);
+    expect(update({ sessionUpdate: 'tool_call', toolCallId: 'tool-1', rawInput: { command: 'rg error' } })).toBe(true);
+    // Partial output must not complete the tool.
+    expect(update({ sessionUpdate: 'tool_call_update', toolCallId: 'tool-1', status: 'in_progress' })).toBe(false);
+    expect(update({ sessionUpdate: 'tool_call_update', toolCallId: 'tool-1', status: 'failed' })).toBe(true);
+    expect(update({ sessionUpdate: 'tool_call_update', toolCallId: 'tool-1', status: 'completed' })).toBe(false);
+    expect(update({ sessionUpdate: 'agent_message_chunk', content: { text: 'invalid_encrypted_content from provider' } })).toBe(true);
     expect(state.providerFailure).toBe('invalid_encrypted_content from provider');
   });
 
@@ -199,16 +150,13 @@ lines.on('line', (line) => {
     };
 
     expect(await runAcpHarness(context, contract)).toBe(1);
-    const events = readFileSync(join(runDir, 'output.jsonl'), 'utf8')
+    const events = readFileSync(join(runDir, 'output.v1.jsonl'), 'utf8')
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
-    expect(events[0]).toEqual({
-      type: 'thread.started',
-      thread_id: 'fake-session',
-    });
-    expect(events.at(-1)?.type).toBe('turn.failed');
-    expect(events.at(-1)?.error.message).toContain('could not be verified');
+    expect(events[0]).toEqual({ type: 'session', id: 'fake-session', status: 'started' });
+    expect(events.at(-1)).toMatchObject({ type: 'run', status: 'failed' });
+    expect(events.find((event) => event.type === 'error')?.message).toContain('could not be verified');
     const rawFrames = readFileSync(join(runDir, 'acp.raw.jsonl'), 'utf8')
       .trim()
       .split('\n')
@@ -430,17 +378,51 @@ lines.on('line', (line) => {
     const contract: AcpHarnessContract = {
       id: 'hermes-acp',
       restore: 'load',
-      reportModel: true,
       process: () => ({
         command: [process.execPath, server],
       }),
     };
 
     expect(await runAcpHarness(context, contract)).toBe(0);
-    const output = readFileSync(join(context.runDir, 'output.jsonl'), 'utf8');
-    expect(output).toContain('"thread_id":"hermes-session"');
-    expect(output).toContain('"model":"qwen3"');
-    expect(output).toContain('"type":"turn.completed"');
+    const events = v1Events(context.runDir);
+    expect(events[0]).toEqual({ type: 'session', id: 'hermes-session', status: 'started' });
+    expect(JSON.parse(readFileSync(join(context.runDir, 'output.v1.meta.json'), 'utf8')).requestedModel).toBe('qwen3');
+    expect(events.at(-1)).toMatchObject({ type: 'run', status: 'completed' });
+  });
+
+  test('a model probe ends with a completed V1 run naming the session and never prompts the model', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'carapa-acp-probe-'));
+    roots.push(root);
+    const context = managedContext(root, 'hermes-acp');
+    context.env.CARAPA_MODEL_PROBE = '1';
+    const promptMarker = join(root, 'prompted');
+    const server = join(root, 'probe-acp.ts');
+    writeFileSync(
+      server,
+      `import { writeFileSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+const lines = createInterface({ input: process.stdin });
+const emit = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\\n');
+lines.on('line', (line) => {
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') emit({ id: request.id, result: {} });
+  if (request.method === 'session/new') emit({ id: request.id, result: { sessionId: 'probe-session' } });
+  if (request.method === 'session/prompt') writeFileSync(${JSON.stringify(promptMarker)}, 'prompted');
+});
+`,
+    );
+    const contract: AcpHarnessContract = {
+      id: 'hermes-acp',
+      restore: 'load',
+      process: () => ({ command: [process.execPath, server] }),
+    };
+
+    expect(await runAcpHarness(context, contract)).toBe(0);
+    const events = v1Events(context.runDir);
+    expect(events).toContainEqual({ type: 'session', id: 'probe-session', status: 'started' });
+    expect(events.at(-1)).toMatchObject({ type: 'run', status: 'completed' });
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+    expect(existsSync(promptMarker)).toBe(false);
   });
 
   test('falls back to a new Cursor-style session when session/load is rejected', async () => {
@@ -473,7 +455,36 @@ lines.on('line', (line) => {
 
     expect(await runAcpHarness(context, contract)).toBe(0);
     expect(readFileSync(join(context.runDir, 'persistent_resume_failed'), 'utf8')).toBe('stale-session');
-    expect(readFileSync(join(context.runDir, 'output.jsonl'), 'utf8')).toContain('"thread_id":"replacement-session"');
+    expect(v1Events(context.runDir)[0]).toMatchObject({ type: 'session', id: 'replacement-session' });
+  });
+
+  test('a rejected session/resume before the V1 writer exists still ends the run with the provider text', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'carapa-acp-resume-fail-'));
+    roots.push(root);
+    const context = managedContext(root, 'omp-acp');
+    context.args.sessionId = 'abc';
+    const server = join(root, 'resume-acp.ts');
+    writeFileSync(
+      server,
+      `import { createInterface } from 'node:readline';
+const lines = createInterface({ input: process.stdin });
+const emit = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\\n');
+lines.on('line', (line) => {
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') emit({ id: request.id, result: {} });
+  if (request.method === 'session/resume') emit({ id: request.id, error: { message: 'Session abc not found' } });
+});
+`,
+    );
+    const contract: AcpHarnessContract = {
+      id: 'omp-acp',
+      restore: 'resume',
+      process: () => ({ command: [process.execPath, server] }),
+    };
+
+    expect(await runAcpHarness(context, contract)).toBe(1);
+    const terminal = readFileSync(join(context.runDir, 'output.v1.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line)).at(-1);
+    expect(terminal).toMatchObject({ type: 'run', status: 'failed', error: { message: 'Session abc not found' } });
   });
 
   test('passes a Prime session id at process launch without session/load', async () => {
@@ -506,7 +517,7 @@ lines.on('line', (line) => {
 
     expect(await runAcpHarness(context, contract)).toBe(0);
     expect(resumedWith).toBe('prime-session');
-    expect(readFileSync(join(context.runDir, 'output.jsonl'), 'utf8')).toContain('"thread_id":"prime-session"');
+    expect(v1Events(context.runDir)[0]).toMatchObject({ type: 'session', id: 'prime-session' });
   });
 
   test('does not resend unchanged warm-session configuration', async () => {
@@ -730,10 +741,9 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     expect(await runAcpHarness(recovered, contract(recovering))).toBe(0);
     const sent = readFileSync(prompts, 'utf8').trim().split('\n').map((line) => line.replace(/^\d+: /, ''));
     expect(sent).toEqual(['continue', 'correction text']);
-    const output = readFileSync(join(recovered.runDir, 'output.jsonl'), 'utf8');
-    expect(output).toContain('restarted the agent process');
-    expect(output).not.toContain('turn.failed');
-    expect(output).toContain('turn.completed');
+    const recoveredEvents = v1Events(recovered.runDir);
+    expect(recoveredEvents).toContainEqual(expect.objectContaining({ type: 'message', id: 'harness-restart-notice', content: expect.stringContaining('restarted the agent process') }));
+    expect(recoveredEvents.at(-1)).toMatchObject({ type: 'run', status: 'completed' });
     await stopRun(recovered.runDir, pidOf(recovered));
 
     // A second matching failure in the same run fails it and retires the process.
@@ -741,19 +751,16 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     writeFileSync(prompts, '');
     expect(await runAcpHarness(exhausted, contract(recovering, { ALWAYS_REJECT: '1' }))).toBe(1);
     expect(readFileSync(prompts, 'utf8').trim().split('\n')).toHaveLength(2);
-    expect(readFileSync(join(exhausted.runDir, 'output.jsonl'), 'utf8')).toContain('turn.failed');
+    expect(v1Events(exhausted.runDir).at(-1)).toMatchObject({ type: 'run', status: 'failed' });
     expect(existsSync(join(root, 'ipc', 'sessions', 'exhausted', 'daemon.pid'))).toBe(false);
 
     // When the reload fails, the replacement session gets the original request with the correction and is
-    // published in both streams; the run keeps its first prompt dispatch time.
+    // published in the V1 stream; the run keeps its first prompt dispatch time.
     const replaced = makeContext('replaced', 'replaced');
     writeFileSync(prompts, '');
     writeFileSync(`${prompts}.times`, '');
     expect(await runAcpHarness(replaced, contract(recovering, { LOAD_FAILS: '1', FAIL_DELAY_MS: '400' }))).toBe(0);
     expect(readFileSync(prompts, 'utf8')).toEndWith(': continue\n\ncorrection text\n');
-    const replacedOutput = readFileSync(join(replaced.runDir, 'output.jsonl'), 'utf8');
-    expect(replacedOutput).toContain('"thread_id":"stuck-session"');
-    expect(replacedOutput).toContain('"thread_id":"replacement-session"');
     const v1Sessions = readFileSync(join(replaced.runDir, 'output.v1.jsonl'), 'utf8').trim().split('\n')
       .map((line) => JSON.parse(line)).filter((event) => event.type === 'session').map((event) => event.id);
     expect(v1Sessions).toEqual(['stuck-session', 'replacement-session']);
@@ -779,7 +786,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     expect(Date.now() - slowStart).toBeLessThan(4000);
     expect(readFileSync(prompts, 'utf8').trim().split('\n')).toHaveLength(1);
     expect(existsSync(join(slow.runDir, 'control-responses', 'stop.json'))).toBe(true);
-    expect(readFileSync(join(slow.runDir, 'output.jsonl'), 'utf8')).toContain('turn.completed');
+    expect(v1Events(slow.runDir).at(-1)).toMatchObject({ type: 'run', status: 'completed' });
 
     // An interrupt whose marker is on disk before its request is still answered, and no correction is sent.
     const late = makeContext('late', 'late');
@@ -829,7 +836,6 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     expect(readFileSync(prompts, 'utf8').trim().split('\n')).toHaveLength(1);
     expect(existsSync(join(configuring.runDir, 'control-responses', 'stop.json'))).toBe(true);
     expect(readFileSync(join(root, 'ipc', 'sessions', 'configuring', 'session_id'), 'utf8')).toBe('replacement-session');
-    expect(readFileSync(join(configuring.runDir, 'output.jsonl'), 'utf8')).toContain('"thread_id":"replacement-session"');
     expect(readFileSync(join(configuring.runDir, 'output.v1.jsonl'), 'utf8')).toContain('"id":"replacement-session"');
 
     // An interrupt that wins against the replacement's launch leaves no supervisor or pid file behind.
@@ -863,14 +869,14 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     }))).toBe(0);
     expect(readFileSync(prompts, 'utf8').trim().split('\n')).toHaveLength(1);
     expect(existsSync(join(crashing.runDir, 'control-responses', 'stop.json'))).toBe(true);
-    expect(readFileSync(join(crashing.runDir, 'output.jsonl'), 'utf8')).not.toContain('turn.failed');
+    expect(v1Events(crashing.runDir).at(-1)).not.toMatchObject({ status: 'failed' });
     expect(existsSync(join(root, 'ipc', 'sessions', 'crashing', 'daemon.pid'))).toBe(false);
 
     // A hard stop aimed at the crashed process while its replacement starts leaves no replacement and no correction.
     const stopped = makeContext('stopped', 'stopped');
     writeFileSync(prompts, '');
     const stoppedRun = runAcpHarness(stopped, contract(recovering, { LOAD_DELAY_MS: '1500' }));
-    const stopOutput = join(stopped.runDir, 'output.jsonl');
+    const stopOutput = join(stopped.runDir, 'output.v1.jsonl');
     while (!existsSync(stopOutput) || !readFileSync(stopOutput, 'utf8').includes('restarted the agent process')) await Bun.sleep(20);
     await stopRun(stopped.runDir, pidOf(stopped));
     expect(await stoppedRun).toBe(1);
@@ -937,7 +943,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     writeFileSync(prompts, '');
     expect(await runAcpHarness(unrepeatable, contract({ ...recovering, freshSessionRequest: () => null }, { LOAD_FAILS: '1' }))).toBe(1);
     expect(readFileSync(prompts, 'utf8').trim().split('\n')).toHaveLength(1);
-    expect(readFileSync(join(unrepeatable.runDir, 'output.jsonl'), 'utf8')).toContain('cannot repeat the original request');
+    expect(v1Events(unrepeatable.runDir).at(-1)).toMatchObject({ type: 'run', status: 'failed', error: { message: expect.stringContaining('cannot repeat the original request') } });
     expect(existsSync(join(root, 'ipc', 'sessions', 'unrepeatable', 'daemon.pid'))).toBe(false);
 
     // An interrupt that arrives while the agent restarts ends the run without sending the correction.
@@ -948,7 +954,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     expect(await runAcpHarness(interrupted, contract(recovering, { INTERRUPT_FILE: interruptFile }))).toBe(0);
     expect(readFileSync(prompts, 'utf8').trim().split('\n')).toHaveLength(1);
     expect(existsSync(join(interrupted.runDir, 'control-responses', 'stop.json'))).toBe(true);
-    expect(readFileSync(join(interrupted.runDir, 'output.jsonl'), 'utf8')).not.toContain('turn.failed');
+    expect(v1Events(interrupted.runDir).at(-1)).not.toMatchObject({ status: 'failed' });
     await stopRun(interrupted.runDir, pidOf(interrupted));
   }, 30_000);
 });

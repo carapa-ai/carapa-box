@@ -184,11 +184,9 @@ describe('typed Codex app-server runner', () => {
       expect(events.filter((event) => event.type === 'run' && ['completed', 'interrupted', 'failed'].includes(event.status))).toHaveLength(1);
       expect(events.at(-1)).toMatchObject({ type: 'run', status: 'completed' });
       expect(events.some((event) => event.id === 'stale' || event.id === 'child')).toBe(false);
-      for (const name of ['output.jsonl', 'output.v1.jsonl']) {
-        const output = readFileSync(join(value.runDir, name), 'utf8');
-        expect(output).toContain('correct the call automatically');
-        expect(output).toContain('App published.');
-      }
+      const output = readFileSync(join(value.runDir, 'output.v1.jsonl'), 'utf8');
+      expect(output).toContain('correct the call automatically');
+      expect(output).toContain('App published.');
       if (persistent) {
         lastRunDir = join(value.root, 'ipc', 'runs', 'warm');
         mkdirSync(lastRunDir);
@@ -338,12 +336,10 @@ describe('typed Codex app-server runner', () => {
         expect(canonical.at(-1)).toMatchObject({ type: 'run', status: 'completed' });
         expect(canonical.filter((event) => event.type === 'usage')).toHaveLength(1);
         expect(canonical.find((event) => event.type === 'usage')).toMatchObject({ inputTokens: 7, outputTokens: 3 });
-        for (const name of ['output.jsonl', 'output.v1.jsonl']) {
-          const output = readFileSync(join(currentRunDir, name), 'utf8');
-          expect(output).not.toContain('child');
-          expect(output).not.toContain('stale reply');
-          expect(output).toContain('hello');
-        }
+        const output = readFileSync(join(currentRunDir, 'output.v1.jsonl'), 'utf8');
+        expect(output).not.toContain('child');
+        expect(output).not.toContain('stale reply');
+        expect(output).toContain('hello');
         expect(readFileSync(join(currentRunDir, 'codex.raw.jsonl'), 'utf8')).toContain('child review');
       }
       const capture = readFileSync(value.capturePath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
@@ -387,7 +383,7 @@ describe('typed Codex app-server runner', () => {
       throw new Error(
         `${error instanceof Error ? error.message : error}; exit=${processHandle.exitCode}; ` +
         `control=${diagnostic('codex-control.json')}; stderr=${diagnostic('codex-stderr.log')}; ` +
-        `output=${diagnostic('output.jsonl')}; capture=${
+        `output=${diagnostic('output.v1.jsonl')}; capture=${
           existsSync(value.capturePath) ? readFileSync(value.capturePath, 'utf8') : '(missing)'
         }`,
       );
@@ -404,11 +400,6 @@ describe('typed Codex app-server runner', () => {
       result: { accepted: true },
     });
 
-    const outputPath = join(value.runDir, 'output.jsonl');
-    await waitFor(
-      () => readFileSync(outputPath, 'utf8').includes('askuserquestion'),
-      'Codex user-input request',
-    );
     const v1Path = join(value.runDir, 'output.v1.jsonl');
     await waitFor(
       () =>
@@ -434,27 +425,6 @@ describe('typed Codex app-server runner', () => {
     });
 
     expect(await processHandle.exited).toBe(0);
-    const output = readFileSync(outputPath, 'utf8')
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line));
-    expect(output).toContainEqual({ type: 'thread.started', thread_id: 'thread-test' });
-    expect(output).toContainEqual({
-      type: 'item.updated',
-      item: { id: 'a1', type: 'agent_message', delta: 'hello' },
-    });
-    expect(output.some((event) => event.item?.text?.includes('askuserquestion'))).toBe(true);
-    expect(output.some((event) => event.item?.text?.includes('carapaplan'))).toBe(true);
-    expect(output).toContainEqual({
-      type: 'turn.usage',
-      usage: {
-        input_tokens: 7,
-        cached_input_tokens: 0,
-        cache_write_input_tokens: 0,
-        output_tokens: 3,
-        reasoning_output_tokens: 0,
-      },
-    });
     expect(JSON.parse(readFileSync(controlPath, 'utf8')).state).toBe('completed');
     const promptDispatchedAtMs = Number(
       readFileSync(join(value.runDir, 'prompt_dispatched_at_ms'), 'utf8'),
@@ -514,7 +484,6 @@ describe('typed Codex app-server runner', () => {
     expect(completedPlans[0]).toMatchObject({
       role: 'assistant',
       status: 'completed',
-      content: output.find((event) => event.item?.id === 'p1')?.item.text,
     });
     expect(completedPlans[0].content).toContain('carapaplan');
     const planCard = JSON.parse(completedPlans[0].content.match(/```carapaplan\n([^\n]+)/)[1]);
@@ -530,6 +499,11 @@ describe('typed Codex app-server runner', () => {
       output: 'ok',
       exitCode: 0,
     });
+    expect(canonical).toContainEqual(expect.objectContaining({
+      type: 'interaction',
+      id: '900',
+      status: 'requested',
+    }));
     expect(canonical).toContainEqual({
       type: 'interaction',
       id: '900',
@@ -617,11 +591,6 @@ describe('typed Codex app-server runner', () => {
     });
 
     expect(await processHandle.exited).toBe(0);
-    const output = readFileSync(join(value.runDir, 'output.jsonl'), 'utf8')
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line));
-    expect(output).toContainEqual({ type: 'thread.started', thread_id: 'thread-existing' });
     const capture = readFileSync(value.capturePath, 'utf8')
       .trim()
       .split('\n')
@@ -649,8 +618,6 @@ describe('typed Codex app-server runner', () => {
       status: 'resumed',
     });
     expect(canonical.some((event) => event.type === 'usage')).toBe(false);
-    const compatibilityOutput = readFileSync(join(value.runDir, 'output.jsonl'), 'utf8');
-    expect(compatibilityOutput).not.toContain('"type":"turn.usage"');
   });
 
   test('keeps one app-server daemon alive across warm turns', async () => {

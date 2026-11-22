@@ -2,7 +2,7 @@
 # Alternative public runtime using CarapaBox's DHI Alpine 3.23 family.
 # Bun's apk claims cmd:node, so keep Node as the package-managed base and copy
 # the controller's exact Bun binary. Harnesses live in separate musl volumes.
-FROM dhi.io/bun:1.4.2-alpine3.23-dev@sha256:bbb258f21b4a1bc7fcc235a93b26d4097d240928ba245f0cafa7e67803dbc731 AS bun-runtime
+FROM dhi.io/bun:1.4.4-alpine3.23-dev@sha256:c89c4914ba11a290c617aaebf1e8246ae8ea2a538ba727ae3cf0e30ae4a4ccac AS bun-runtime
 FROM dhi.io/node:26-alpine3.23-dev@sha256:1fb4a2757c11fc174d3118363d01d7a7cdcd2b96544083c2a372e12d175bc754 AS carapa-bot-runtime
 USER 0
 

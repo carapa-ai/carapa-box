@@ -93,7 +93,7 @@ export async function readNetworkReservation(network: string, deps = defaults): 
  * stopped containers' addresses. Allocate extra endpoints outside those slots. */
 export async function networkAddressAllocator(network: string, deps = defaults) {
     const reservation = await readNetworkReservation(network, deps);
-    if (!reservation) return undefined; // Legacy networks retain Docker IPAM.
+    if (!reservation) return undefined;
     const inspected = await inspectNetwork(network, deps);
     if (!inspected) throw new Error(`Cannot allocate an address on missing network ${network}`);
     const config = networkConfig(inspected);
@@ -184,47 +184,6 @@ function explicitNetworkArgs(reservation: NetworkReservation): string[] {
         "--label", `${SUBNET_LABEL}=1`, reservation.network];
 }
 
-async function ensureExplicitSubnet(reservation: NetworkReservation, inspected: any, deps: ReservationDependencies): Promise<void> {
-    if (inspected.Labels?.[SUBNET_LABEL] === "1") return;
-    const endpoints = Object.entries(inspected.Containers ?? {}) as Array<[string, { Name: string }]>;
-    // Never migrate under a running agent or detach an unknown container. Only
-    // this instance's shared-proxy endpoints may be removed after compose down.
-    if (endpoints.some(([, endpoint]) => !INSTANCE_PROXIES.some(proxy => proxy.container === endpoint.Name))) {
-        throw new Error(`Stop ${reservation.network.replace(/^agent_egress_/, "")} before migrating its subnet; non-proxy containers are still attached`);
-    }
-    if (inspected.EnableIPv6 || Object.keys(inspected.Options ?? {}).length) {
-        throw new Error(`Refusing to discard custom network options on ${reservation.network}`);
-    }
-    const disconnected: Array<[string, { Name: string }]> = [];
-    let removed = false;
-    try {
-        for (const endpoint of endpoints) {
-            const result = await deps.execDocker(["network", "disconnect", "--force", reservation.network, endpoint[0]]);
-            if (result.status !== 0) throw new Error(result.stderr.trim() || "Cannot detach proxy for subnet migration");
-            disconnected.push(endpoint);
-        }
-        // Remove the inspected ID, not a potentially replaced network name.
-        const result = await deps.execDocker(["network", "rm", inspected.Id]);
-        if (result.status !== 0) throw new Error(result.stderr.trim() || "Cannot replace legacy instance network");
-        removed = true;
-        const created = await deps.execDocker(explicitNetworkArgs(reservation));
-        if (created.status !== 0) {
-            throw new Error(`Cannot restore reserved subnet for ${reservation.network}: ${created.stderr.trim()}`);
-        }
-    } catch (error) {
-        // If removal failed, restore proxy reachability on the legacy network.
-        // If creation failed after removal, the durable reservation lets the
-        // next start retry the exact subnet, never an automatically chosen one.
-        if (!removed) {
-            for (const [id, endpoint] of disconnected) {
-                const alias = INSTANCE_PROXIES.find(proxy => proxy.container === endpoint.Name)!.alias;
-                await deps.execDocker(["network", "connect", "--alias", alias, reservation.network, id]);
-            }
-        }
-        throw error;
-    }
-}
-
 /** Shared by normal starts and infrastructure proxy reconnects. */
 export async function connectInstanceProxies(network: string, deps = defaults, proxies = INSTANCE_PROXIES) {
     const reservation = await readNetworkReservation(network, deps);
@@ -259,14 +218,12 @@ export async function reconnectInstanceProxies(networks: string[], deps = defaul
 
 /** Keep the network itself as the Docker-side subnet reservation. The file
  * preserves endpoint assignments and permits exact recovery if it is removed.
- * create=false captures a running legacy instance before compose down, without
- * allocating a new network merely because an already-stopped stack is stopped.
  */
-export async function reserveInstanceNetwork(project: string, create = true, deps = defaults, service = "agent"): Promise<NetworkReservation | undefined> {
+export async function reserveInstanceNetwork(project: string, deps = defaults, service = "agent"): Promise<NetworkReservation> {
     if (!/^[a-z0-9][a-z0-9_-]*$/.test(service)) throw new Error("Invalid reserved service name");
     const key = reservationPath(`agent_egress_${project}`, deps);
     const previous = reservationsInFlight.get(key) ?? Promise.resolve();
-    const current = previous.catch(() => {}).then(() => reserveNetwork(project, create, deps, service));
+    const current = previous.catch(() => {}).then(() => reserveNetwork(project, deps, service));
     reservationsInFlight.set(key, current);
     try {
         return await current;
@@ -275,48 +232,19 @@ export async function reserveInstanceNetwork(project: string, create = true, dep
     }
 }
 
-async function reserveNetwork(project: string, create: boolean, deps: ReservationDependencies, service: string): Promise<NetworkReservation | undefined> {
+async function reserveNetwork(project: string, deps: ReservationDependencies, service: string): Promise<NetworkReservation> {
     const network = `agent_egress_${project}`;
     let reservation = await readNetworkReservation(network, deps);
-    // Older reservations predate service identity. Bind one only when Docker
-    // proves the configured service already owns the exact reserved address.
-    if (reservation && reservation.service === undefined && service !== "agent") {
-        const listed = await deps.execDocker(["ps", "-a", "-q", "--filter", `label=com.docker.compose.project=${project}`,
-            "--filter", `label=com.docker.compose.service=${service}`]);
-        const ids = splitDockerOutput(listed.stdout);
-        if (listed.status !== 0 || ids.length !== 1) throw new Error(`Cannot verify legacy reservation owner for ${network}`);
-        const inspected = await deps.execDocker(["inspect", ids[0]]);
-        const container = inspected.status === 0 ? JSON.parse(inspected.stdout)[0] : undefined;
-        const labels = container?.Config?.Labels;
-        if (labels?.["com.docker.compose.project"] !== project || labels?.["com.docker.compose.service"] !== service ||
-            container?.NetworkSettings?.Networks?.[network]?.IPAddress !== reservation.agentIp) {
-            throw new Error(`Cannot verify legacy reservation owner for ${network}; refusing to transfer its IP`);
-        }
-        const destination = reservationPath(network, deps);
-        const temporary = `${destination}.${randomUUID()}.tmp`;
-        const updated = { ...reservation, service };
-        try {
-            await fs.writeFile(temporary, JSON.stringify(updated, null, 2) + "\n", { mode: 0o600, flag: "wx" });
-            const current = await readNetworkReservation(network, deps);
-            if (JSON.stringify(current) !== JSON.stringify(reservation) && JSON.stringify(current) !== JSON.stringify(updated)) {
-                throw new Error(`Reservation changed while verifying ${network}`);
-            }
-            // Only metadata changes; all endpoint and subnet reservations stay fixed.
-            await fs.rename(temporary, destination);
-            reservation = updated;
-        } finally {
-            await fs.rm(temporary, { force: true });
-        }
-    }
     if (reservation && (reservation.service ?? "agent") !== service) {
         throw new Error(`${network} is reserved for a different service; refusing to transfer its IP`);
     }
     let inspected = await inspectNetwork(network, deps);
+    // Set when this call created the empty network that only asks Docker's
+    // configured address pools for a free subnet. Nothing is attached to it yet.
+    let placeholder = false;
     if (!inspected) {
-        if (!create) return reservation;
-        // The initial empty network asks Docker's configured address pools for
-        // a free subnet. It is replaced with explicit IPAM before any endpoint
-        // is attached. Recoveries already have a subnet and skip that step.
+        // Recoveries already have a subnet and create it with explicit IPAM.
+        placeholder = !reservation;
         const args = reservation ? explicitNetworkArgs(reservation) : ["network", "create", "--internal", network];
         const result = await deps.execDocker(args);
         inspected = await inspectNetwork(network, deps);
@@ -373,6 +301,18 @@ async function reserveNetwork(project: string, create: boolean, deps: Reservatio
     if (config.Subnet !== reservation.subnet || config.Gateway !== reservation.gateway) {
         throw new Error(`${network} no longer matches its saved subnet; refusing to change the sandbox IP`);
     }
-    if (create) await ensureExplicitSubnet(reservation, inspected, deps);
+    if (placeholder) {
+        // Replace it with explicit IPAM before any endpoint is attached. If
+        // creation fails, the durable reservation lets the next start retry the
+        // exact subnet, never an automatically chosen one.
+        const removed = await deps.execDocker(["network", "rm", inspected.Id]);
+        if (removed.status !== 0) throw new Error(removed.stderr.trim() || `Cannot replace placeholder network ${network}`);
+        const created = await deps.execDocker(explicitNetworkArgs(reservation));
+        if (created.status !== 0) {
+            throw new Error(`Cannot restore reserved subnet for ${network}: ${created.stderr.trim()}`);
+        }
+    } else if (inspected.Labels?.[SUBNET_LABEL] !== "1") {
+        throw new Error(`${network} has no explicit subnet label; recreate this sandbox`);
+    }
     return reservation;
 }
