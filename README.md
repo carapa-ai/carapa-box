@@ -114,7 +114,7 @@ CarapaBox requires Docker on the host. Bun is only needed if you are running the
 - **OPA CLI** (Host mode only): [Install OPA](https://www.openpolicyagent.org/docs/latest/#running-opa) — needed to compile `.rego` → `.wasm` policies. In container mode, OPA is bundled and policies compile automatically at startup
 - **gVisor** (recommended): [Install gVisor](https://gvisor.dev/docs/user_guide/install/) or run `sudo bash scripts/install-gvisor.sh` (verifies checksums; re-run it to update). Provides kernel-level isolation for agent containers via `runtime: runsc`. Not required — agent containers work without it, but strongly recommended for production
 - **Agent harnesses** (Claude Code, Codex and others) are not bundled. They run on your own provider subscriptions or API keys; see [API credential relay](#api-credential-relay) and [provider accounts](docs/provider-accounts.md).
-- **Agent image**: No prebuilt image is published for the alpha. Build it locally with `stacks/rebuild-agents.sh` (or `stacks/carapa-bot/build.sh`), which builds `carapa-bot:0.1.0` and then scans it for CVEs; the scan needs `trivy` or `docker scout`, or pass `--no-scan` for a development build.
+- **Agent image**: No prebuilt agent image is published. Build it locally with `stacks/rebuild-agents.sh` (or `stacks/carapa-bot/build.sh`), which builds `carapa-bot:0.1.0` and then scans it for CVEs; the scan needs `trivy` or `docker scout`, or pass `--no-scan` for a development build.
 
 ## Guided setup (strongly recommended)
 
@@ -175,7 +175,7 @@ Ensures a hardened, read-only environment with seccomp and AppArmor profiles enf
 
 ```bash
 # 0. Get the code
-git clone <carapa-box repository URL> carapa-box && cd carapa-box
+git clone https://github.com/carapa-ai/carapa-box.git carapa-box && cd carapa-box
 
 # 1. Choose where to store secrets (one directory per Compose project)
 SECRETS_ROOT="$HOME/.carapa/secrets"

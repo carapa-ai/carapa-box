@@ -6,8 +6,8 @@ Isolated agent execution container for CarapaBoard. Runs coding harnesses inside
 
 The public image is **`carapa-bot:0.1.0`**. Set `CARAPA_BOT_IMAGE` to a versioned
 Docker Hub name such as `<namespace>/carapa-bot:0.1.0`, or an image digest.
-`<namespace>` is a placeholder for your own registry namespace; no prebuilt image is published for the
-alpha, and the default path is the local build (`./build.sh`, or `stacks/rebuild-agents.sh`).
+`<namespace>` is a placeholder for your own registry namespace; no prebuilt image is published, and
+the default path is the local build (`./build.sh`, or `stacks/rebuild-agents.sh`).
 `carapa-bot-agent:latest` is reserved for the separate personalized stack.
 
 The image contains the system runtime, Node, Bun, Python, Chromium, all `bin/`

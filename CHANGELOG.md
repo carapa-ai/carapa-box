@@ -39,7 +39,7 @@ First public release.
 - Hub mode: a box connects to a CarapaBoard hub and uses the hub's provider accounts. See `docs/multi-host.md`
 - Mac native runner: agents run in a per-project Seatbelt sandbox, with Board's shell tab (needs `tmux`) and live browser viewer; `bun run runner` updates its own checkout
 - Linux runner with OpenShell sandboxes (experimental), including CarapaBrain services and libkrun microVMs (`openshell.driver: "vm"`). See `docs/multi-host.md`
-- Agent-guided setup: CarapaBoard's setup skill for Box and Board together, or this repository's skill (`/setup` in Claude Code) and Codex / Claude plugin for CarapaBox alone
+- Agent-guided setup: CarapaBoard's setup skill for Box and Board together, or this repository's skill (`/setup` in Claude Code) and Codex plugin for CarapaBox alone
 - `uninstall.sh` (in `.agent/skills/setup/scripts/`) removes the controller, egress proxy, controller-started stacks and the host-mode systemd user service. Images, install state and secrets are removed only on request; group directories, agent homes and CarapaBoard data are never removed. It prints the plan unless `--yes`
 - CVE scanning of built images and before a stack starts (report-only)
 
